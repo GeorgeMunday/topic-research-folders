@@ -40,3 +40,5 @@ test("bad fenced block falls back to unfenced JSON", () =>
   expect(extractJson('```json\n{oops}\n```\nHere: {"a":1}')).toEqual({ a: 1 }));
 test("skips brace prose before real JSON", () =>
   expect(extractJson('Use {like this} then {"a":2}')).toEqual({ a: 2 }));
+test("fenced JSON preferred over earlier prose object", () =>
+  expect(extractJson('Example {"x":0}\n```json\n{"a":1}\n```')).toEqual({ a: 1 }));

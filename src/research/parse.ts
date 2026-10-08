@@ -37,7 +37,7 @@ function scanParse(text: string): { ok: true; value: unknown } | { ok: false; er
 }
 
 export function extractJson(text: string): unknown {
-  const fence = /```(?:json)?s*([sS]*?)```/i.exec(text);
+  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
   if (fence) {
     const r = scanParse(fence[1]);
     if (r.ok) return r.value;
