@@ -13,6 +13,7 @@ import type { VaultLike } from "./vault/writer";
 import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
 import { PdfFlow } from "./flows/pdfFlow";
+import { decideRename } from "./events";
 import { SuggestionModal } from "./ui/SuggestionModal";
 import { ConfirmModal } from "./ui/ConfirmModal";
 
@@ -191,7 +192,14 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       else if (f instanceof TFile && isPdfPath(f.path) && settings().processPdfs) guard(pdfFlow.onFileEvent(f.path));
     };
     this.registerEvent(vault.on("create", onCreated));
-    this.registerEvent(vault.on("rename", (f) => onCreated(f)));
+    this.registerEvent(vault.on("rename", (f, oldPath) => {
+      const d = decideRename({ isFolder: f instanceof TFolder, oldPath, newPath: f.path, processed: this.data.processedPdfs });
+      if (d.action === "folder-event") guard(researchFlow.onFolderEvent(d.path));
+      else if (d.action === "update-processed") {
+        const e = this.data.processedPdfs[d.hash];
+        if (e) { e.path = d.path; guard(this.persist()); }
+      } else if (d.action === "pdf-event" && settings().processPdfs) guard(pdfFlow.onFileEvent(d.path));
+    }));
 
     const parentOfActive = (): string | null => {
       const file = this.app.workspace.getActiveFile();
