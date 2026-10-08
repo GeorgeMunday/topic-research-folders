@@ -20,13 +20,33 @@ export class VaultWriter {
     return this.vault.children(root).filter((c) => c.isFolder).map((c) => c.name);
   }
 
-  // Create a folder and any missing ancestors; existing ones are reused.
-  private async ensureFolder(path: string): Promise<void> {
+  // Create a folder and any missing ancestors, matching existing ones case-insensitively.
+  // Returns the resolved path (using existing casing).
+  private async ensureFolder(path: string): Promise<string> {
     let current = "";
-    for (const seg of path.split("/").filter((s) => s !== "")) {
-      current = join(current, seg);
-      if (!this.vault.exists(current)) await this.vault.createFolder(current);
+    for (const seg of path.split("/").filter((x) => x !== "")) {
+      const lower = seg.toLowerCase();
+      const hit = this.vault.children(current).find((c) => c.isFolder && c.name.toLowerCase() === lower);
+      if (hit) current = join(current, hit.name);
+      else if (this.vault.exists(join(current, seg))) current = join(current, seg);
+      else {
+        current = join(current, seg);
+        await this.vault.createFolder(current);
+      }
     }
+    return current;
+  }
+
+  private async hasMarkedOverview(folder: string): Promise<boolean> {
+    const overviews = this.vault
+      .children(folder)
+      .filter((c) => !c.isFolder && /^.+ - Overview( \(\d+\))?\.md$/i.test(c.name));
+    for (const o of overviews) {
+      const content = await this.vault.read(join(folder, o.name));
+      const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+      if (fm && /^research-root:\s*true\s*$/m.test(fm[1])) return true;
+    }
+    return false;
   }
 
   // Case-insensitive collision check against what already exists in a folder.
@@ -93,7 +113,12 @@ export class VaultWriter {
     ex: PdfExtraction,
     date: string,
   ): Promise<{ subfolder: string; title: string }[]> {
-    const existing = new Map(this.listSubfolders(root).map((n) => [n.toLowerCase(), n]));
+    const reserved = new Set(["from pdfs", "sources"]);
+    const existing = new Map(
+      this.listSubfolders(root)
+        .filter((n) => !reserved.has(n.toLowerCase()))
+        .map((n) => [n.toLowerCase(), n]),
+    );
     const used = new Set<string>();
     const created: { subfolder: string; title: string }[] = [];
     for (const note of ex.notes) {
@@ -102,8 +127,7 @@ export class VaultWriter {
       if (match) {
         folder = join(root, match);
       } else {
-        folder = join(root, "From PDFs", sanitiseName(note.subfolder));
-        await this.ensureFolder(folder);
+        folder = await this.ensureFolder(join(root, "From PDFs", sanitiseName(note.subfolder)));
       }
       const title = await this.writeUniqueNote(folder, note.title, used, () =>
         renderNote(note, { topic, subtopic: note.subfolder, date, source: pdfName, pages: note.pages }),
@@ -111,8 +135,7 @@ export class VaultWriter {
       created.push({ subfolder: note.subfolder, title });
     }
 
-    const sourcesFolder = join(root, "Sources");
-    await this.ensureFolder(sourcesFolder);
+    const sourcesFolder = await this.ensureFolder(join(root, "Sources"));
     const stem = sanitiseName(pdfName.replace(/\.pdf$/i, ""));
     const summaryName = uniqueName(`${stem} - Summary`, (c) => this.taken(sourcesFolder, `${c}.md`));
     await this.vault.createFile(
@@ -128,10 +151,7 @@ export class VaultWriter {
     // Ancestors only (the last segment is the item itself), nearest first.
     for (let i = segs.length - 1; i >= 1; i--) {
       const folder = segs.slice(0, i).join("/");
-      const overview = join(folder, `${basename(folder)} - Overview.md`);
-      if (!this.vault.exists(overview)) continue;
-      const content = await this.vault.read(overview);
-      if (/^research-root:\s*true\s*$/m.test(content)) marked.push(folder);
+      if (await this.hasMarkedOverview(folder)) marked.push(folder);
     }
     if (marked.length === 0) return null;
     const root = marked[0];

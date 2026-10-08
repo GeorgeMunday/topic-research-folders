@@ -181,3 +181,60 @@ describe("findResearchRoot", () => {
     expect(await w.findResearchRoot("Black holes/x.pdf")).toBeNull();
   });
 });
+
+describe("findResearchRoot robustness", () => {
+  const marked = "---\nresearch-root: true\n---\n";
+  test("renamed folder still found via inner overview", async () => {
+    const { v, w } = setup();
+    v.files.set("Renamed/Old name - Overview.md", marked);
+    expect(await w.findResearchRoot("Renamed/Sub/x.pdf")).toEqual({ root: "Renamed", topic: "Renamed", parents: [] });
+  });
+  test("folder with special characters", async () => {
+    const { v, w } = setup();
+    v.files.set("C# basics/C basics - Overview.md", marked);
+    expect((await w.findResearchRoot("C# basics/x.pdf"))?.root).toBe("C# basics");
+  });
+  test("numbered folder and numbered overview", async () => {
+    const { v, w } = setup();
+    v.files.set("Anatomy (2)/Anatomy - Overview.md", marked);
+    v.files.set("Other/X - Overview (2).md", marked);
+    expect((await w.findResearchRoot("Anatomy (2)/x.pdf"))?.root).toBe("Anatomy (2)");
+    expect((await w.findResearchRoot("Other/x.pdf"))?.root).toBe("Other");
+  });
+  test("3-level parents chain outermost first", async () => {
+    const { v, w } = setup();
+    v.files.set("A/A - Overview.md", marked);
+    v.files.set("A/B/B - Overview.md", marked);
+    v.files.set("A/B/C/C - Overview.md", marked);
+    expect(await w.findResearchRoot("A/B/C/x.pdf")).toEqual({ root: "A/B/C", topic: "C", parents: ["A", "A/B"] });
+  });
+  test("marker in body is ignored; CRLF frontmatter accepted", async () => {
+    const { v, w } = setup();
+    v.files.set("P/P - Overview.md", "---\ntopic: x\n---\n\nresearch-root: true\n");
+    v.files.set("Q/Q - Overview.md", "---\r\nresearch-root: true\r\n---\r\n");
+    expect(await w.findResearchRoot("P/x.pdf")).toBeNull();
+    expect((await w.findResearchRoot("Q/x.pdf"))?.root).toBe("Q");
+  });
+});
+
+describe("case-insensitive folders", () => {
+  test("reuses existing 'from pdfs' and 'sources' folders", async () => {
+    const { v, w } = setup();
+    v.folders.add("Black holes/from pdfs");
+    v.folders.add("Black holes/SOURCES");
+    const ex: PdfExtraction = { summary: "s", notes: [{ ...note("N"), subfolder: "Jets", isNew: true, pages: "1" }] };
+    await w.writeExtracted("Black holes", "Black holes", "p.pdf", ex, DATE);
+    expect(v.files.has("Black holes/from pdfs/Jets/N.md")).toBe(true);
+    expect(v.files.has("Black holes/SOURCES/p - Summary.md")).toBe(true);
+    expect(v.folders.has("Black holes/From PDFs")).toBe(false);
+  });
+  test("non-new note named 'From PDFs' or 'Sources' is not routed into them", async () => {
+    const { v, w } = setup();
+    v.folders.add("Black holes/From PDFs");
+    v.folders.add("Black holes/Sources");
+    const ex: PdfExtraction = { summary: "s", notes: [{ ...note("N"), subfolder: "Sources", isNew: false, pages: "1" }] };
+    await w.writeExtracted("Black holes", "Black holes", "p.pdf", ex, DATE);
+    expect(v.files.has("Black holes/Sources/N.md")).toBe(false);
+    expect(v.files.has("Black holes/From PDFs/Sources/N.md")).toBe(true);
+  });
+});
