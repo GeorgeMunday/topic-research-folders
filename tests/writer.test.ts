@@ -110,9 +110,9 @@ describe("writeExtracted", () => {
     v.folders.add("Black holes/Anatomy");
     const r = await w.writeExtracted("Black holes", "Black holes", "paper.pdf", ex, DATE);
     expect(r).toEqual([
-      { subfolder: "anatomy", title: "Horizon facts" },
-      { subfolder: "Jets", title: "Jets - big" },
-      { subfolder: "Deleted", title: "Ghost" },
+      { subfolder: "anatomy", title: "Horizon facts", folder: "Black holes/Anatomy" },
+      { subfolder: "Jets", title: "Jets - big", folder: "Black holes/From PDFs/Jets" },
+      { subfolder: "Deleted", title: "Ghost", folder: "Black holes/From PDFs/Deleted" },
     ]);
     const n1 = v.files.get("Black holes/Anatomy/Horizon facts.md")!;
     expect(n1).toContain('source: "[[paper.pdf]]"');
@@ -120,9 +120,9 @@ describe("writeExtracted", () => {
     expect(v.files.has("Black holes/From PDFs/Jets/Jets - big.md")).toBe(true);
     expect(v.files.has("Black holes/From PDFs/Deleted/Ghost.md")).toBe(true);
     const s = v.files.get("Black holes/Sources/paper - Summary.md")!;
-    expect(s).toContain("[[Horizon facts]]");
-    expect(s).toContain("[[Jets - big]]");
-    expect(s).toContain("[[Ghost]]");
+    expect(s).toContain("[[Black holes/Anatomy/Horizon facts|Horizon facts]]");
+    expect(s).toContain("[[Black holes/From PDFs/Jets/Jets - big|Jets - big]]");
+    expect(s).toContain("[[Black holes/From PDFs/Deleted/Ghost|Ghost]]");
   });
 
   test("reuses existing From PDFs and Sources folders, never overwrites", async () => {
@@ -133,7 +133,7 @@ describe("writeExtracted", () => {
     v.files.set("Black holes/Sources/paper - Summary.md", "ORIGINAL");
     v.files.set("Black holes/From PDFs/Jets/Jets - big.md", "ORIGINAL2");
     const r = await w.writeExtracted("Black holes", "Black holes", "paper.pdf", { summary: "s", notes: [ex.notes[1]] }, DATE);
-    expect(r).toEqual([{ subfolder: "Jets", title: "Jets - big (2)" }]);
+    expect(r).toEqual([{ subfolder: "Jets", title: "Jets - big (2)", folder: "Black holes/From PDFs/Jets" }]);
     expect(v.files.get("Black holes/Sources/paper - Summary.md")).toBe("ORIGINAL");
     expect(v.files.has("Black holes/Sources/paper - Summary (2).md")).toBe(true);
     expect(v.files.get("Black holes/From PDFs/Jets/Jets - big.md")).toBe("ORIGINAL2");

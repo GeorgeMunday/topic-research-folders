@@ -104,7 +104,7 @@ export class ResearchFlow {
 
     const done = [...job.done];
     // Titles are known only for subfolders written in this run; resumed (already done) ones link with no note titles.
-    const results = new Map<string, { subfolder: string; noteTitles: string[] }>();
+    const results = new Map<string, { subfolder: string; noteTitles: string[]; folder?: string }>();
     let failures = 0;
     for (const sub of approved) {
       if (done.includes(sub.name)) continue;
@@ -112,7 +112,7 @@ export class ResearchFlow {
       try {
         const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder);
         const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes }, today());
-        results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles });
+        results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
       } catch (err) {
         if (isRetryable(err)) throw err;
         failures++;

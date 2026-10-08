@@ -84,3 +84,33 @@ test("multi-line subfolder why stays single-line in overview", () => {
     [{ subfolder: "A", noteTitles: [] }], "2026-10-08");
   expect(md).toContain("  x y\n");
 });
+
+test("overview links use the full vault path with the title as alias when folder is given", () => {
+  const md = renderOverview({ topic: "Black holes", summary: "S", subfolders: [] },
+    [{ subfolder: "Anatomy", noteTitles: ["Event horizon"], folder: "Black holes/Anatomy" }], "2026-10-08");
+  expect(md).toContain("  - [[Black holes/Anatomy/Event horizon|Event horizon]]");
+});
+
+test("same title in different subfolders gives distinct link targets", () => {
+  const md = renderOverview({ topic: "T", summary: "S", subfolders: [] }, [
+    { subfolder: "A", noteTitles: ["Intro"], folder: "T/A" },
+    { subfolder: "B", noteTitles: ["Intro"], folder: "T/B" },
+  ], "2026-10-08");
+  expect(md).toContain("[[T/A/Intro|Intro]]");
+  expect(md).toContain("[[T/B/Intro|Intro]]");
+});
+
+test("folder with a space and parentheses is used verbatim", () => {
+  const md = renderOverview({ topic: "T", summary: "S", subfolders: [] },
+    [{ subfolder: "Anatomy (2)", noteTitles: ["X"], folder: "T/Anatomy (2)" }], "2026-10-08");
+  expect(md).toContain("[[T/Anatomy (2)/X|X]]");
+});
+
+test("source summary uses full paths when folder is given, bare titles otherwise", () => {
+  const md = renderSourceSummary("p.pdf", "T", "Sum", [
+    { subfolder: "A", title: "X", folder: "T/A" },
+    { subfolder: "B", title: "Y" },
+  ], "2026-10-08");
+  expect(md).toContain("[[T/A/X|X]]");
+  expect(md).toContain("[[Y]]");
+});

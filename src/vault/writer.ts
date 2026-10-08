@@ -113,7 +113,7 @@ export class VaultWriter {
   async writeOverview(
     parent: string,
     outline: Outline,
-    links: { subfolder: string; noteTitles: string[] }[],
+    links: { subfolder: string; noteTitles: string[]; folder?: string }[],
     date: string,
   ): Promise<string> {
     await this.ensureFolder(parent);
@@ -130,7 +130,7 @@ export class VaultWriter {
     pdfName: string,
     ex: PdfExtraction,
     date: string,
-  ): Promise<{ subfolder: string; title: string }[]> {
+  ): Promise<{ subfolder: string; title: string; folder: string }[]> {
     const reserved = new Set(["from pdfs", "sources"]);
     const existing = new Map(
       this.listSubfolders(root)
@@ -138,7 +138,7 @@ export class VaultWriter {
         .map((n) => [n.toLowerCase(), n]),
     );
     const used = new Set<string>();
-    const created: { subfolder: string; title: string }[] = [];
+    const created: { subfolder: string; title: string; folder: string }[] = [];
     for (const note of ex.notes) {
       const match = note.isNew ? undefined : existing.get(note.subfolder.toLowerCase());
       let folder: string;
@@ -150,7 +150,7 @@ export class VaultWriter {
       const title = await this.writeUniqueNote(folder, note.title, used, () =>
         renderNote(note, { topic, subtopic: note.subfolder, date, source: pdfName, pages: note.pages }),
       );
-      created.push({ subfolder: note.subfolder, title });
+      created.push({ subfolder: note.subfolder, title, folder });
     }
 
     const sourcesFolder = await this.ensureFolder(join(root, "Sources"));

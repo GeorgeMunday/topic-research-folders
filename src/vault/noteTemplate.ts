@@ -15,6 +15,12 @@ function renderKeyPoints(points: string[]): string[] {
   return points.map((p) => (/^\s/.test(p) ? `  - ${oneLine(p)}` : `- ${oneLine(p)}`));
 }
 
+// With a folder: a full-path wikilink aliased to the title (unambiguous when titles repeat); otherwise a bare link.
+function noteLink(title: string, folder?: string): string {
+  const t = oneLine(title);
+  return folder ? `[[${oneLine(folder)}/${t}|${t}]]` : `[[${t}]]`;
+}
+
 const QA_BLOCK = ["## Questions & Answers", "", "**Q:** ", "**A:** "];
 
 export function renderNote(
@@ -48,7 +54,7 @@ export function renderNote(
 
 export function renderOverview(
   outline: Outline,
-  links: { subfolder: string; noteTitles: string[] }[],
+  links: { subfolder: string; noteTitles: string[]; folder?: string }[],
   date: string,
 ): string {
   const why = new Map(outline.subfolders.map((s) => [s.name, oneLine(s.why)]));
@@ -66,7 +72,7 @@ export function renderOverview(
     sections.push(`- **${oneLine(link.subfolder)}**`);
     const reason = why.get(link.subfolder);
     if (reason) sections.push(`  ${reason}`);
-    for (const title of link.noteTitles) sections.push(`  - [[${oneLine(title)}]]`);
+    for (const title of link.noteTitles) sections.push(`  - ${noteLink(title, link.folder)}`);
   }
 
   const body = [
@@ -87,7 +93,7 @@ export function renderSourceSummary(
   pdfName: string,
   topic: string,
   summary: string,
-  links: { subfolder: string; title: string }[],
+  links: { subfolder: string; title: string; folder?: string }[],
   date: string,
 ): string {
   const frontmatter = [
@@ -101,14 +107,14 @@ export function renderSourceSummary(
 
   const bySubfolder = new Map<string, string[]>();
   for (const link of links) {
-    const titles = bySubfolder.get(link.subfolder) ?? [];
-    titles.push(link.title);
-    bySubfolder.set(link.subfolder, titles);
+    const targets = bySubfolder.get(link.subfolder) ?? [];
+    targets.push(noteLink(link.title, link.folder));
+    bySubfolder.set(link.subfolder, targets);
   }
   const sections: string[] = [];
-  for (const [subfolder, titles] of bySubfolder) {
+  for (const [subfolder, targets] of bySubfolder) {
     sections.push(`- **${oneLine(subfolder)}**`);
-    for (const title of titles) sections.push(`  - [[${oneLine(title)}]]`);
+    for (const target of targets) sections.push(`  - ${target}`);
   }
 
   const body = [

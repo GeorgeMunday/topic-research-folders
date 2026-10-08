@@ -293,6 +293,15 @@ describe("run", () => {
     expect(ov).toContain("**A (2)**");
   });
 
+  test("overview links are full-path wikilinks, distinct for repeated titles", async () => {
+    const s = setup({ approve: [A, B] });
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    const ov = s.v.files.get("T/T - Overview.md")!;
+    expect(ov).toContain("[[T/A/A note|A note]]");
+    expect(ov).toContain("[[T/B/B note|B note]]");
+  });
+
   test("run re-checks depth at start", async () => {
     const s = setup({ settings: { maxDepth: 1 } });
     s.v.folders.add("Black holes");
