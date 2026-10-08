@@ -34,3 +34,9 @@ test("parseNotes with zero valid notes throws", () => {
   expect(() => parseNotes('{"notes":[]}', 3)).toThrow(ParseError);
   expect(() => parseNotes('{"notes":[{"title":" ","summary":"s","keyPoints":["k"],"plainWords":"p"}]}', 3)).toThrow(ParseError);
 });
+test("escaped quote inside a string", () => expect(extractJson('{"a":"x\\"}"}')).toEqual({ a: 'x"}' }));
+test("backslash before closing quote", () => expect(extractJson('{"a":"x\\\\"} tail')).toEqual({ a: "x\\" }));
+test("bad fenced block falls back to unfenced JSON", () =>
+  expect(extractJson('```json\n{oops}\n```\nHere: {"a":1}')).toEqual({ a: 1 }));
+test("skips brace prose before real JSON", () =>
+  expect(extractJson('Use {like this} then {"a":2}')).toEqual({ a: 2 }));

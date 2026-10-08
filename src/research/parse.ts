@@ -7,9 +7,7 @@ export class ParseError extends Error {
   }
 }
 
-function balancedObject(text: string): string | null {
-  const start = text.indexOf("{");
-  if (start < 0) return null;
+function balancedAt(text: string, start: number): string | null {
   let depth = 0, inStr = false, esc = false;
   for (let i = start; i < text.length; i++) {
     const c = text[i];
@@ -24,17 +22,29 @@ function balancedObject(text: string): string | null {
   return null;
 }
 
-export function extractJson(text: string): unknown {
-  let candidate: string | null = null;
-  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  if (fence) candidate = fence[1].trim();
-  if (candidate === null || !candidate.startsWith("{")) candidate = balancedObject(candidate ?? text) ?? balancedObject(text);
-  if (candidate === null) throw new ParseError("No JSON object found in response");
-  try {
-    return JSON.parse(candidate);
-  } catch (e) {
-    throw new ParseError(`Invalid JSON: ${(e as Error).message}`);
+function scanParse(text: string): { ok: true; value: unknown } | { ok: false; err: string } {
+  let err = "No JSON object found in response";
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) {
+    const cand = balancedAt(text, i);
+    if (cand === null) continue;
+    try {
+      return { ok: true, value: JSON.parse(cand) };
+    } catch (e) {
+      err = `Invalid JSON: ${(e as Error).message}`;
+    }
   }
+  return { ok: false, err };
+}
+
+export function extractJson(text: string): unknown {
+  const fence = /```(?:json)?s*([sS]*?)```/i.exec(text);
+  if (fence) {
+    const r = scanParse(fence[1]);
+    if (r.ok) return r.value;
+  }
+  const r = scanParse(text);
+  if (r.ok) return r.value;
+  throw new ParseError(r.err);
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
