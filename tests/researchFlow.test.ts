@@ -265,6 +265,28 @@ describe("run", () => {
     expect(s.enqueued).toEqual([]);
   });
 
+  test("a network TypeError from the client mid-loop propagates; the queue retries from the checkpoint", async () => {
+    const s = setup({ approve: [A, B] });
+    s.v.folders.add("T");
+    let bCalls = 0;
+    const origGet = s.failNotes.get.bind(s.failNotes);
+    s.failNotes.get = (k: string) => (k === "B" ? (bCalls++ === 0 ? new TypeError("offline") : undefined) : origGet(k));
+    let failed = 0;
+    const q = new JobQueue(s.flow.run, {
+      maxConcurrent: () => 1, maxRetries: () => 3,
+      persist: async () => {}, sleep: async () => {}, rand: () => 0.5,
+      onChange: () => {}, onFailed: () => { failed++; },
+    });
+    q.add(rjob("T"));
+    await q.idle();
+    expect(failed).toBe(0);
+    expect(s.errors).toEqual([]);
+    expect(s.calls.approve).toBe(1);
+    expect(s.calls.notes.filter((c) => c[2] === "A")).toHaveLength(1);
+    expect(s.calls.notes.filter((c) => c[2] === "B")).toHaveLength(2);
+    expect(s.v.files.has("T/B/B note.md")).toBe(true);
+  });
+
   test("missing key at run time -> error, nothing written", async () => {
     const s = setup({ keyless: true });
     s.v.folders.add("T");

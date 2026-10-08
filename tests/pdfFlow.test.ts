@@ -427,6 +427,15 @@ describe("run", () => {
     expect(c.extract).toHaveBeenCalledTimes(2);
   });
 
+  test("a network TypeError from extractPdf propagates (retryable)", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.extract.mockRejectedValue(new TypeError("offline"));
+    await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(TypeError);
+    expect(c.marked).toEqual([]);
+    expect(c.errors).toEqual([]);
+  });
+
   test("non-retryable error → notice, nothing processed, no throw", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);

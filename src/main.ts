@@ -6,6 +6,8 @@ import type { Job } from "./types";
 import { JobQueue } from "./jobs/queue";
 import { ClaudeClient } from "./research/claudeClient";
 import type { HttpFn } from "./research/claudeClient";
+import { makeHttp } from "./research/httpAdapter";
+import type { RequestUrlResult } from "./research/httpAdapter";
 import { VaultWriter } from "./vault/writer";
 import type { VaultLike } from "./vault/writer";
 import { ResearchFlow } from "./flows/researchFlow";
@@ -39,12 +41,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     this.data = mergeData(await this.loadData());
     const settings = (): Settings => this.data.settings;
 
-    const http: HttpFn = async (req) => {
-      const res = await requestUrl({ url: req.url, method: req.method, headers: req.headers, body: req.body, throw: false });
-      let json: any;
-      try { json = res.json; } catch { json = undefined; }
-      return { status: res.status, json, headers: res.headers };
-    };
+    const http: HttpFn = makeHttp((p) => requestUrl(p) as unknown as Promise<RequestUrlResult>);
 
     const vault = this.app.vault;
     const vaultLike: VaultLike = {
