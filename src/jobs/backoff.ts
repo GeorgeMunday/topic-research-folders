@@ -1,9 +1,8 @@
-import { ApiError } from "./queue";
-
 const RETRYABLE_STATUS = [429, 500, 502, 503, 504, 529];
 
 export function isRetryable(err: unknown): boolean {
-  if (err instanceof ApiError) return RETRYABLE_STATUS.includes(err.status);
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === "number") return RETRYABLE_STATUS.includes(status);
   return err instanceof TypeError; // network failure
 }
 

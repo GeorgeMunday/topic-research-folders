@@ -155,3 +155,109 @@ test("cancelAll empties queue and flags running", async () => {
   expect(o.failed).toHaveLength(0);
   expect(o.persisted[o.persisted.length - 1]).toEqual([]);
 });
+
+test("add after cancelAll allows same kind+path again", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let runs = 0;
+  const q = new JobQueue(async () => { runs++; if (runs === 1) await gate; }, o);
+  q.add(pdfJob("a.pdf"));
+  await tick();
+  q.cancelAll();
+  expect(q.add(pdfJob("a.pdf"))).toBe(true);
+  release();
+  await q.idle();
+  expect(runs).toBe(2);
+});
+
+test("cancelAll wakes a sleeping retry and frees the slot", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  o.sleep = () => new Promise<void>(() => {});
+  let runs = 0;
+  const q = new JobQueue(async () => { runs++; throw new ApiError("slow", 429, 60000); }, o);
+  q.add(pdfJob("a.pdf"));
+  await tick();
+  q.cancelAll();
+  await q.idle();
+  expect(runs).toBe(1);
+  expect(o.failed).toHaveLength(0);
+});
+
+test("throwing onFailed and onChange never leak a slot", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  o.onFailed = () => { throw new Error("cb"); };
+  o.onChange = () => { throw new Error("cb2"); };
+  const done: string[] = [];
+  const q = new JobQueue(async (j) => {
+    if (j.path === "a.pdf") throw new ApiError("no", 401);
+    done.push(j.path);
+  }, o);
+  q.add(pdfJob("a.pdf"));
+  q.add(pdfJob("b.pdf"));
+  await q.idle();
+  expect(done).toEqual(["b.pdf"]);
+});
+
+test("onPersistError is called when persist rejects", async () => {
+  const o = opts();
+  const errs: unknown[] = [];
+  o.persist = async () => { throw new Error("disk"); };
+  (o as QueueOpts).onPersistError = (e) => { errs.push(e); };
+  const q = new JobQueue(async () => {}, o);
+  q.add(pdfJob("a.pdf"));
+  await q.idle();
+  expect(errs.length).toBeGreaterThan(0);
+});
+
+test("50-add burst with sync-throwing and rejecting runners respects concurrency", async () => {
+  const o = opts({ maxConcurrent: 3 });
+  let live = 0, peak = 0, finished = 0;
+  const q = new JobQueue(async (j) => {
+    live++; peak = Math.max(peak, live);
+    try {
+      const n = Number(j.path.slice(1, -4));
+      if (n % 3 === 0) throw new ApiError("no", 400);
+      if (n % 3 === 1) await Promise.reject(new ApiError("no", 401));
+      await tick();
+    } finally { live--; finished++; }
+  }, o);
+  for (let i = 0; i < 50; i++) q.add(pdfJob(`p${i}.pdf`));
+  await q.idle();
+  expect(peak).toBeLessThanOrEqual(3);
+  expect(finished).toBe(50);
+});
+
+test("429 storm: one job gives up, the rest finish", async () => {
+  const o = opts({ maxConcurrent: 3, maxRetries: 2 });
+  const done: string[] = [];
+  const calls: Record<string, number> = {};
+  const q = new JobQueue(async (j) => {
+    calls[j.path] = (calls[j.path] ?? 0) + 1;
+    if (j.path === "bad.pdf") throw new ApiError("rl", 429);
+    if (calls[j.path] < 2) throw new ApiError("rl", 429, 100);
+    done.push(j.path);
+  }, o);
+  for (const p of ["a.pdf", "bad.pdf", "b.pdf", "c.pdf"]) q.add(pdfJob(p));
+  await q.idle();
+  expect(done.sort()).toEqual(["a.pdf", "b.pdf", "c.pdf"]);
+  expect(calls["bad.pdf"]).toBe(3);
+  expect(o.failed.map((f) => f.job.path)).toEqual(["bad.pdf"]);
+});
+
+test("restore dedupes against running; idle can be called repeatedly", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let runs = 0;
+  const q = new JobQueue(async () => { runs++; await gate; }, o);
+  q.add(pdfJob("a.pdf"));
+  await tick();
+  q.restore([pdfJob("a.pdf"), pdfJob("b.pdf")]);
+  const i1 = q.idle(), i2 = q.idle();
+  release();
+  await Promise.all([i1, i2]);
+  await q.idle();
+  await q.idle();
+  expect(runs).toBe(2);
+});

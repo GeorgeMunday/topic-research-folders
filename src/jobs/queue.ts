@@ -26,15 +26,16 @@ export interface QueueOpts {
   rand: () => number;
   onChange: (running: number, queued: number) => void;
   onFailed: (job: Job, err: unknown) => void;
+  onPersistError?: (err: unknown) => void;
 }
 
-interface Active { job: Job; signal: { cancelled: boolean }; }
+interface Active { job: Job; signal: { cancelled: boolean }; wake?: () => void; }
 
 const keyOf = (j: Job) => `${j.kind}\u0000${j.path}`;
 
 export class JobQueue {
   private queue: Job[] = [];
-  private running = new Map<string, Active>(); // by id
+  private running = new Set<Active>();
   private idleWaiters: Array<() => void> = [];
   private persistChain: Promise<void> = Promise.resolve();
 
@@ -43,7 +44,7 @@ export class JobQueue {
   add(job: Job): boolean {
     const k = keyOf(job);
     if (this.queue.some((j) => keyOf(j) === k)) return false;
-    for (const a of this.running.values()) if (keyOf(a.job) === k) return false;
+    for (const a of this.running) if (!a.signal.cancelled && keyOf(a.job) === k) return false;
     this.queue.push(job);
     this.changed();
     this.pump();
@@ -56,7 +57,7 @@ export class JobQueue {
       const k = keyOf(job);
       if (this.queue.some((j) => keyOf(j) === k)) continue;
       let dup = false;
-      for (const a of this.running.values()) if (keyOf(a.job) === k) dup = true;
+      for (const a of this.running) if (!a.signal.cancelled && keyOf(a.job) === k) dup = true;
       if (dup) continue;
       this.queue.push(job);
       added = true;
@@ -66,7 +67,7 @@ export class JobQueue {
 
   cancelAll(): void {
     this.queue = [];
-    for (const a of this.running.values()) a.signal.cancelled = true;
+    for (const a of this.running) { a.signal.cancelled = true; a.wake?.(); }
     this.changed();
     this.checkIdle();
   }
@@ -82,7 +83,7 @@ export class JobQueue {
 
   private snapshot(): Job[] {
     const live: Job[] = [];
-    for (const a of this.running.values()) if (!a.signal.cancelled) live.push(a.job);
+    for (const a of this.running) if (!a.signal.cancelled) live.push(a.job);
     return [...live, ...this.queue];
   }
 
@@ -90,12 +91,12 @@ export class JobQueue {
     const jobs = this.snapshot();
     this.persistChain = this.persistChain
       .then(() => this.opts.persist(jobs))
-      .catch(() => {});
+      .catch((e) => { try { this.opts.onPersistError?.(e); } catch { /* ignore */ } });
     return this.persistChain;
   }
 
   private changed(): Promise<void> {
-    this.opts.onChange(this.running.size, this.queue.length);
+    try { this.opts.onChange(this.running.size, this.queue.length); } catch { /* ignore */ }
     return this.persistNow();
   }
 
@@ -110,15 +111,15 @@ export class JobQueue {
     while (this.queue.length > 0 && this.running.size < Math.max(1, this.opts.maxConcurrent())) {
       const job = this.queue.shift()!;
       const active: Active = { job, signal: { cancelled: false } };
-      this.running.set(job.id, active);
+      this.running.add(active);
       this.changed();
-      void this.runJob(active);
+      this.runJob(active).catch(() => {});
     }
   }
 
   private async runJob(active: Active): Promise<void> {
     const checkpoint = async (j: Job) => {
-      if (this.running.get(active.job.id) === active) active.job = j;
+      if (this.running.has(active)) active.job = j;
       await this.changed();
     };
     let attempt = 0;
@@ -132,16 +133,20 @@ export class JobQueue {
           if (active.signal.cancelled) break;
           if (isRetryable(err) && attempt <= this.opts.maxRetries()) {
             const retryAfter = err instanceof ApiError ? err.retryAfterMs : undefined;
-            await this.opts.sleep(delayFor(attempt, retryAfter, this.opts.rand));
+            await Promise.race([
+              this.opts.sleep(delayFor(attempt, retryAfter, this.opts.rand)),
+              new Promise<void>((res) => { active.wake = res; if (active.signal.cancelled) res(); }),
+            ]);
+            active.wake = undefined;
             if (active.signal.cancelled) break;
             continue;
           }
-          this.opts.onFailed(active.job, err);
+          try { this.opts.onFailed(active.job, err); } catch { /* ignore */ }
           break;
         }
       }
     } finally {
-      this.running.delete(active.job.id);
+      this.running.delete(active);
       this.changed();
       this.pump();
       this.checkIdle();
