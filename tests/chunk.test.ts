@@ -107,7 +107,7 @@ describe("splitPdf real-size verification", () => {
 
   test("oversized middle page is skipped; later chunks keep absolute numbers", async () => {
     const bytes = await build([0, 0, 30000, 0, 0, 0]);
-    const r = await splitPdf(bytes, 50, 8000);
+    const r = await splitPdf(bytes, 50, 8000, { measureLimit: 0 });
     expect(r.skippedPages).toEqual([3]);
     expect(r.chunks.map(c => [c.firstPage, c.lastPage])).toEqual([[1, 2], [4, 6]]);
     expect((await inspectPdf(b64ToBuf(r.chunks[1].base64))).pageCount).toBe(3);
