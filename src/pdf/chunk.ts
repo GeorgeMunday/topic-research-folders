@@ -76,6 +76,7 @@ const PER_PAGE_MEASURE_LIMIT = 600;
  */
 export async function splitPdf(
   bytes: ArrayBuffer, maxPages: number, maxBytes: number,
+  opts: { measureLimit?: number } = {},
 ): Promise<{ chunks: { base64: string; firstPage: number; lastPage: number }[]; skippedPages: number[] }> {
   const src = await load(bytes);
   const pageCount = src.getPageCount();
@@ -89,7 +90,7 @@ export async function splitPdf(
   }
 
   const sizes: number[] = [];
-  if (pageCount <= PER_PAGE_MEASURE_LIMIT) {
+  if (pageCount <= (opts.measureLimit ?? PER_PAGE_MEASURE_LIMIT)) {
     for (let i = 0; i < pageCount; i++) {
       const one = await PDFDocument.create();
       const [p] = await one.copyPages(src, [i]);
@@ -102,13 +103,25 @@ export async function splitPdf(
 
   const { ranges, oversized } = planChunks(sizes, maxPages, maxBytes);
   const chunks: { base64: string; firstPage: number; lastPage: number }[] = [];
-  for (const [s, e] of ranges) {
+  const skipped = oversized.map(i => i + 1);
+  // Build a range (0-based inclusive); verify the real size and bisect if over maxBytes.
+  const build = async (s: number, e: number): Promise<void> => {
     const out = await PDFDocument.create();
     const idx = Array.from({ length: e - s + 1 }, (_, k) => s + k);
     for (const p of await out.copyPages(src, idx)) out.addPage(p);
-    chunks.push({ base64: toBase64(await out.save()), firstPage: s + 1, lastPage: e + 1 });
-  }
-  return { chunks, skippedPages: oversized.map(i => i + 1) };
+    const saved = await out.save();
+    if (saved.byteLength > maxBytes) {
+      if (s === e) { skipped.push(s + 1); return; }
+      const mid = Math.floor((s + e) / 2);
+      await build(s, mid);
+      await build(mid + 1, e);
+      return;
+    }
+    chunks.push({ base64: toBase64(saved), firstPage: s + 1, lastPage: e + 1 });
+  };
+  for (const [s, e] of ranges) await build(s, e);
+  skipped.sort((a, b) => a - b);
+  return { chunks, skippedPages: skipped };
 }
 
 export async function sha256(bytes: ArrayBuffer): Promise<string> {

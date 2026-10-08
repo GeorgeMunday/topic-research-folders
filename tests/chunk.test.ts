@@ -72,3 +72,44 @@ describe("errors", () => {
 test("sha256 is stable hex", async () =>
   expect(await sha256(new TextEncoder().encode("abc").buffer as ArrayBuffer))
     .toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+
+describe("splitPdf real-size verification", () => {
+  const noise = (n: number) => { let x = 12345, o = ""; for (let i = 0; i < n; i++) { x = (x * 1103515245 + 12345) & 0x7fffffff; o += String.fromCharCode(65 + (x >> 16) % 26); } return o; };
+  async function build(sizes: number[]): Promise<ArrayBuffer> {
+    const doc = await PDFDocument.create();
+    sizes.forEach((n, i) => {
+      const p = doc.addPage();
+      p.drawText(`p${i}`);
+      // large content stream (uncompressed) ~ n bytes
+      if (n > 0) p.drawText(noise(n), { size: 1 });
+    });
+    return toBuf(await doc.save());
+  }
+  const coverage = (r: Awaited<ReturnType<typeof splitPdf>>) => {
+    const pages: number[] = [];
+    for (const c of r.chunks) for (let p = c.firstPage; p <= c.lastPage; p++) pages.push(p);
+    return [...pages, ...r.skippedPages].sort((a, b) => a - b);
+  };
+
+  test("average-estimated chunks exceeding maxBytes are re-split", async () => {
+    const sizes = [...Array(6).fill(0), ...Array(6).fill(5000)];
+    const bytes = await build(sizes);
+    const bigOnly = (await splitPdf(await build([5000]), 50, 1e9)).chunks[0];
+    const maxBytes = Buffer.from(bigOnly.base64, "base64").length * 3;
+    const r = await splitPdf(bytes, 50, maxBytes, { measureLimit: 0 });
+    expect(r.skippedPages).toEqual([]);
+    for (const c of r.chunks) expect(Buffer.from(c.base64, "base64").length).toBeLessThanOrEqual(maxBytes);
+    expect(r.chunks.length).toBeGreaterThan(2);
+    expect(coverage(r)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
+    const starts = r.chunks.map(c => c.firstPage);
+    expect(starts).toEqual([...starts].sort((a, b) => a - b));
+  });
+
+  test("oversized middle page is skipped; later chunks keep absolute numbers", async () => {
+    const bytes = await build([0, 0, 30000, 0, 0, 0]);
+    const r = await splitPdf(bytes, 50, 8000);
+    expect(r.skippedPages).toEqual([3]);
+    expect(r.chunks.map(c => [c.firstPage, c.lastPage])).toEqual([[1, 2], [4, 6]]);
+    expect((await inspectPdf(b64ToBuf(r.chunks[1].base64))).pageCount).toBe(3);
+  });
+});
