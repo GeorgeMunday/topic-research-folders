@@ -1,14 +1,25 @@
 import type { SubfolderSuggestion } from "../types";
-import { sanitiseName } from "../names";
+import { sanitiseName, uniqueName } from "../names";
 
 export interface SuggestionRow { suggestion: SubfolderSuggestion; name: string; checked: boolean; }
 
-/** Checked rows only, with edited names sanitised (blank edits fall back to the original). */
+// Folders the plugin itself creates inside a research root.
+const RESERVED = new Set(["sources", "from pdfs"]);
+
+/**
+ * Checked rows only, with edited names sanitised (blank edits fall back to the original).
+ * Names are made unique case-insensitively (the flow tracks progress by name) and a name that
+ * equals a reserved folder gets " notes" appended.
+ */
 export function selectApproved(rows: SuggestionRow[]): SubfolderSuggestion[] {
+  const seen = new Set<string>();
   return rows
     .filter((r) => r.checked)
-    .map((r) => ({
-      name: sanitiseName(r.name.trim() === "" ? r.suggestion.name : r.name),
-      why: r.suggestion.why,
-    }));
+    .map((r) => {
+      let name = sanitiseName(r.name.trim() === "" ? r.suggestion.name : r.name);
+      if (RESERVED.has(name.toLowerCase())) name = `${name} notes`;
+      name = uniqueName(name, (c) => seen.has(c.toLowerCase()));
+      seen.add(name.toLowerCase());
+      return { name, why: r.suggestion.why };
+    });
 }

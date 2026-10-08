@@ -65,7 +65,12 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
 function validJob(j: unknown): boolean {
-  return isObj(j) && typeof j.id === "string" && typeof j.path === "string" && (j.kind === "research" || j.kind === "pdf");
+  if (!isObj(j) || typeof j.id !== "string" || typeof j.path !== "string") return false;
+  if (j.kind === "pdf") return true;
+  if (j.kind !== "research") return false;
+  if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
+  if (j.approved === undefined) return true;
+  return Array.isArray(j.approved) && j.approved.every((a) => isObj(a) && typeof a.name === "string");
 }
 
 function validProcessed(raw: unknown): PluginData["processedPdfs"] {

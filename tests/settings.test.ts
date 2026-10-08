@@ -72,6 +72,21 @@ describe("settings", () => {
 });
 
 describe("mergeData entry validation", () => {
+  test("research jobs need a done array of strings and a well-formed approved list", () => {
+    const base = { id: "r", kind: "research", path: "T" };
+    const good = { ...base, done: ["A"], approved: [{ name: "A", why: "w" }] };
+    const noApproved = { ...base, done: [] };
+    const bad = [
+      { ...base },
+      { ...base, done: "A" },
+      { ...base, done: [1] },
+      { ...base, done: [], approved: "x" },
+      { ...base, done: [], approved: [{ why: "w" }] },
+      { ...base, done: [], approved: [null] },
+    ];
+    expect(mergeData({ jobs: [good, noApproved, ...bad] }).jobs).toEqual([good, noApproved]);
+  });
+
   test("drops malformed jobs", () => {
     const good = { id: "pdf:a.pdf", kind: "pdf", path: "a.pdf" };
     const d = mergeData({ jobs: [good, { kind: "pdf", path: "x" }, { id: "1", kind: "pdf" }, { id: "2", kind: "other", path: "p" }, null, 5] });
