@@ -16,6 +16,24 @@ const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 export class VaultWriter {
   constructor(private vault: VaultLike) {}
 
+  private created = new Set<string>();
+
+  // Recorded before the await: the vault's create event can fire during the call.
+  private async makeFolder(path: string): Promise<void> {
+    this.created.add(path);
+    try {
+      await this.vault.createFolder(path);
+    } catch (e) {
+      this.created.delete(path);
+      throw e;
+    }
+  }
+
+  /** True (once) if the plugin itself created this folder, so it must not trigger research. */
+  consumeCreated(path: string): boolean {
+    return this.created.delete(path);
+  }
+
   listSubfolders(root: string): string[] {
     return this.vault.children(root).filter((c) => c.isFolder).map((c) => c.name);
   }
@@ -31,7 +49,7 @@ export class VaultWriter {
       else if (this.vault.exists(join(current, seg))) current = join(current, seg);
       else {
         current = join(current, seg);
-        await this.vault.createFolder(current);
+        await this.makeFolder(current);
       }
     }
     return current;
@@ -78,7 +96,7 @@ export class VaultWriter {
     await this.ensureFolder(parent);
     const name = uniqueName(sanitiseName(sn.subfolder), (c) => this.taken(parent, c));
     const folder = join(parent, name);
-    await this.vault.createFolder(folder);
+    await this.makeFolder(folder);
     const used = new Set<string>();
     const noteTitles: string[] = [];
     for (const note of sn.notes) {

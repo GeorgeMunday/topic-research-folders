@@ -158,7 +158,7 @@ describe("events", () => {
     await s.flow.onFolderEvent("Black holes/Anatomy/Deep+");
     expect(s.enqueued).toEqual([]);
     expect(s.renames).toEqual([]);
-    expect(s.errors.length + s.infos.length).toBe(1);
+    expect(s.errors).toHaveLength(1);
   });
 
   test("researchFolder needs no suffix and does not rename", async () => {
@@ -271,6 +271,41 @@ describe("run", () => {
     await s.run(rjob("T"));
     expect(s.errors).toHaveLength(1);
     expect(s.v.files.size).toBe(0);
+  });
+
+  test("overview links use the actual folder name written", async () => {
+    const s = setup({ approve: [A] });
+    s.v.folders.add("T");
+    s.v.folders.add("T/A");
+    await s.run(rjob("T"));
+    expect(s.v.files.has("T/A (2)/A note.md")).toBe(true);
+    const ov = s.v.files.get("T/T - Overview.md")!;
+    expect(ov).toContain("**A (2)**");
+  });
+
+  test("run re-checks depth at start", async () => {
+    const s = setup({ settings: { maxDepth: 1 } });
+    s.v.folders.add("Black holes");
+    s.v.files.set("Black holes/Black holes - Overview.md", ROOT_MARK);
+    s.v.folders.add("Black holes/Anatomy");
+    await s.run(rjob("Black holes/Anatomy"));
+    expect(s.errors).toHaveLength(1);
+    expect(s.calls.outline).toEqual([]);
+    expect(s.calls.approve).toBe(0);
+  });
+
+  test("a subfolder the writer created does not re-trigger; a user one does", async () => {
+    const s = setup({ approve: [sug("C++")] });
+    s.v.folders.add("Black holes");
+    await s.run(rjob("Black holes"));
+    s.flow.markReady();
+    s.enqueued.length = 0;
+    await s.flow.onFolderEvent("Black holes/C++");
+    expect(s.enqueued).toEqual([]);
+    expect(s.renames).toEqual([]);
+    s.v.folders.add("Black holes/Another+");
+    await s.flow.onFolderEvent("Black holes/Another+");
+    expect(s.enqueued).toHaveLength(1);
   });
 
   test("real queue: retryable failure resumes from checkpoint without re-approving or rewriting", async () => {

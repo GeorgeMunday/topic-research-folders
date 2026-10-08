@@ -50,6 +50,7 @@ export class ResearchFlow {
 
   async onFolderEvent(path: string): Promise<void> {
     if (!this.ready) return;
+    if (this.deps.writer.consumeCreated(path)) return;
     const s = this.deps.settings();
     if (!isTriggerName(baseName(path), s.triggerSuffix)) return;
     if (!(await this.precheck(path))) return;
@@ -83,6 +84,10 @@ export class ResearchFlow {
     // findResearchRoot looks at ancestors of the path it is given.
     const r = await writer.findResearchRoot(job.path);
     const parents = r ? [...r.parents, r.topic] : [];
+    if (parents.length + 1 > s.maxDepth) {
+      notify.error(`Not researching "${topic}": nesting would be ${parents.length + 1} levels deep (limit ${s.maxDepth}).`);
+      return;
+    }
 
     let current: Job = job;
     let outline: Outline | undefined;
@@ -106,7 +111,7 @@ export class ResearchFlow {
       try {
         const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder);
         const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes }, today());
-        results.set(sub.name, { subfolder: sub.name, noteTitles: res.noteTitles });
+        results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles });
       } catch (err) {
         if (isRetryable(err)) throw err;
         failures++;

@@ -238,3 +238,32 @@ describe("case-insensitive folders", () => {
     expect(v.files.has("Black holes/From PDFs/Sources/N.md")).toBe(true);
   });
 });
+
+describe("consumeCreated", () => {
+  test("records created subfolder path and consumes it once", async () => {
+    const { w } = setup();
+    await w.writeSubfolder("Black holes", "Black holes", sn("C++", "x"), DATE);
+    expect(w.consumeCreated("Black holes/C++")).toBe(true);
+    expect(w.consumeCreated("Black holes/C++")).toBe(false);
+    expect(w.consumeCreated("Black holes/other")).toBe(false);
+  });
+
+  test("records intermediate folders made by ensureFolder", async () => {
+    const v = new MemVault();
+    const w = new VaultWriter(v);
+    await w.writeSubfolder("New/Deep", "T", sn("A", "x"), DATE);
+    expect(w.consumeCreated("New")).toBe(true);
+    expect(w.consumeCreated("New/Deep")).toBe(true);
+    expect(w.consumeCreated("New/Deep/A")).toBe(true);
+  });
+
+  test("recorded before createFolder resolves", async () => {
+    const v = new MemVault();
+    const w = new VaultWriter(v);
+    let during: boolean | undefined;
+    const orig = v.createFolder.bind(v);
+    v.createFolder = async (p: string) => { during = w.consumeCreated(p); await orig(p); };
+    await w.writeSubfolder("P", "T", sn("A+", "x"), DATE);
+    expect(during).toBe(true);
+  });
+});
