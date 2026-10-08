@@ -64,6 +64,19 @@ const RANGES: Record<string, [number, number]> = {
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
+function validJob(j: unknown): boolean {
+  return isObj(j) && typeof j.id === "string" && typeof j.path === "string" && (j.kind === "research" || j.kind === "pdf");
+}
+
+function validProcessed(raw: unknown): PluginData["processedPdfs"] {
+  const out: PluginData["processedPdfs"] = {};
+  if (!isObj(raw)) return out;
+  for (const [hash, e] of Object.entries(raw)) {
+    if (isObj(e) && typeof e.path === "string" && typeof e.date === "string") out[hash] = { path: e.path, date: e.date };
+  }
+  return out;
+}
+
 /** Merge saved data over defaults, ignoring wrong-typed values and clamping numbers. */
 export function mergeData(raw: unknown): PluginData {
   const src = isObj(raw) ? raw : {};
@@ -85,8 +98,8 @@ export function mergeData(raw: unknown): PluginData {
   if (validateSuffix(settings.triggerSuffix) !== null) settings.triggerSuffix = DEFAULT_SETTINGS.triggerSuffix;
   return {
     settings,
-    jobs: Array.isArray(src.jobs) ? (src.jobs as Job[]) : [],
-    processedPdfs: isObj(src.processedPdfs) ? (src.processedPdfs as PluginData["processedPdfs"]) : {},
+    jobs: Array.isArray(src.jobs) ? (src.jobs.filter(validJob) as Job[]) : [],
+    processedPdfs: validProcessed(src.processedPdfs),
   };
 }
 

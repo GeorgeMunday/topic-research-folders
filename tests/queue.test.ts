@@ -261,3 +261,55 @@ test("restore dedupes against running; idle can be called repeatedly", async () 
   await q.idle();
   expect(runs).toBe(2);
 });
+
+test("restore after an early add keeps both and persists both", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  const runs: string[] = [];
+  const q = new JobQueue(async (j) => { runs.push(j.path); await tick(); }, o);
+  q.add(pdfJob("A.pdf"));
+  q.restore([pdfJob("B.pdf"), pdfJob("A.pdf")]);
+  await tick();
+  expect(o.persisted.some((p) => p.map((j) => j.path).sort().join() === "A.pdf,B.pdf")).toBe(true);
+  await q.idle();
+  expect(runs.sort()).toEqual(["A.pdf", "B.pdf"]);
+});
+
+test("shutdown cancels running, drops queued, and never persists again", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  const seen: boolean[] = [];
+  const ran: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const q = new JobQueue(async (j, signal, checkpoint) => {
+    ran.push(j.path);
+    await gate;
+    seen.push(signal.cancelled);
+    await checkpoint(j);
+  }, o);
+  q.add(pdfJob("a.pdf"));
+  q.add(pdfJob("b.pdf"));
+  await tick();
+  const before = o.persisted.length;
+  q.shutdown();
+  release();
+  await tick(); await tick();
+  expect(seen).toEqual([true]);
+  expect(ran).toEqual(["a.pdf"]);
+  expect(o.persisted.length).toBe(before);
+  expect(q.add(pdfJob("c.pdf"))).toBe(false);
+});
+
+test("shutdown wakes a job sleeping between retries", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  o.sleep = () => new Promise<void>(() => {}); // never resolves
+  let calls = 0;
+  const q = new JobQueue(async () => { calls++; throw new ApiError("x", 429); }, o);
+  q.add(pdfJob("a.pdf"));
+  await tick();
+  const before = o.persisted.length;
+  q.shutdown();
+  await tick(); await tick();
+  expect(calls).toBe(1);
+  expect(o.persisted.length).toBe(before);
+  expect(o.failed).toEqual([]);
+});

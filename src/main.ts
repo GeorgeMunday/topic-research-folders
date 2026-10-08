@@ -26,6 +26,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
   private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {} };
   private saveChain: Promise<void> = Promise.resolve();
   private statusEl: HTMLElement | null = null;
+  private stopFns: Array<() => void> = [];
 
   private persist(): Promise<void> {
     this.saveChain = this.saveChain
@@ -76,6 +77,17 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       return out;
     };
 
+    const openModals = new Set<{ close: () => void }>();
+    const timers = new Set<number>();
+    let ready = false;
+    const fail = (e: unknown) => { new Notice(`Research problem: ${e instanceof Error ? e.message : "unexpected error"}`, 10000); };
+    const guard = (p: Promise<unknown>) => { p.catch(fail); };
+    const needReady = (): boolean => {
+      if (ready) return true;
+      new Notice("Obsidian is still loading. Try again in a moment.");
+      return false;
+    };
+
     const notify: Notifier = {
       info: (m) => { new Notice(m); },
       error: (m) => { new Notice(m, 10000); },
@@ -114,6 +126,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         onChange: (r, q) => {
           if (!this.statusEl) return;
           this.statusEl.setText(r + q === 0 ? "" : `Research: ${r}/${q}`);
+          this.statusEl.style.display = r + q === 0 ? "none" : "";
         },
         onFailed: (job, err) => {
           notify.error(`Research job failed (${job.kind}: ${job.path}): ${err instanceof Error ? err.message : "unexpected error"}`);
@@ -127,7 +140,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     researchFlow = new ResearchFlow({
       client: clientFor,
       writer,
-      approver: { approve: (o) => new SuggestionModal(this.app).approve(o) },
+      approver: { approve: (o) => { const m = new SuggestionModal(this.app); openModals.add(m); return m.approve(o).finally(() => openModals.delete(m)); } },
       notify,
       rename: async (from, to) => {
         const f = vault.getAbstractFileByPath(from);
@@ -143,7 +156,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       client: clientFor,
       writer,
       notify,
-      confirm: { confirm: (m) => new ConfirmModal(this.app).confirm(m) },
+      confirm: { confirm: (msg) => { const m = new ConfirmModal(this.app); openModals.add(m); return m.confirm(msg).finally(() => openModals.delete(m)); } },
       readBinary: async (p) => {
         const f = vault.getAbstractFileByPath(p);
         if (!(f instanceof TFile)) throw new Error(`Not a file: ${p}`);
@@ -162,17 +175,21 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         delete this.data.processedPdfs[hash];
         await this.persist();
       },
-      setTimer: (fn, ms) => { window.setTimeout(fn, ms); },
+      setTimer: (fn, ms) => {
+        const id = window.setTimeout(() => { timers.delete(id); fn(); }, ms);
+        timers.add(id);
+      },
     });
 
     this.addSettingTab(new SettingsTab(this.app, this, { settings, save: () => this.persist() }));
 
     this.statusEl = this.addStatusBarItem();
     this.statusEl.setText("");
+    this.statusEl.style.display = "none";
 
     const onCreated = (f: TAbstractFile) => {
-      if (f instanceof TFolder) void researchFlow.onFolderEvent(f.path);
-      else if (f instanceof TFile && isPdfPath(f.path) && settings().processPdfs) void pdfFlow.onFileEvent(f.path);
+      if (f instanceof TFolder) guard(researchFlow.onFolderEvent(f.path));
+      else if (f instanceof TFile && isPdfPath(f.path) && settings().processPdfs) guard(pdfFlow.onFileEvent(f.path));
     };
     this.registerEvent(vault.on("create", onCreated));
     this.registerEvent(vault.on("rename", (f) => onCreated(f)));
@@ -187,9 +204,10 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       id: "research-this-folder",
       name: "Research this folder",
       callback: () => {
+        if (!needReady()) return;
         const folder = parentOfActive();
         if (!folder) { new Notice("Open a note inside the folder you want to research."); return; }
-        void researchFlow.researchFolder(folder);
+        guard(researchFlow.researchFolder(folder));
       },
     });
 
@@ -197,11 +215,14 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       id: "analyse-pdfs-in-this-folder",
       name: "Analyse PDFs in this folder",
       callback: async () => {
+        if (!needReady()) return;
+        try {
         const folder = parentOfActive();
         if (!folder) { new Notice("Open a note inside the researched folder."); return; }
         const root = await writer.findResearchRoot(`${folder}/x.pdf`);
         if (!root) { new Notice("This folder is not inside a researched topic."); return; }
         await pdfFlow.queuePaths(listPdfs(root.root), { force: true });
+        } catch (e) { fail(e); }
       },
     });
 
@@ -209,6 +230,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       id: "cancel-all-research-jobs",
       name: "Cancel all research jobs",
       callback: () => {
+        if (!needReady()) return;
         queue.cancelAll();
         new Notice("Cancelled all research jobs.");
       },
@@ -218,18 +240,30 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       this.app.workspace.on("file-menu", (menu, file) => {
         if (!(file instanceof TFolder) || file.path === "/" || file.isRoot()) return;
         menu.addItem((item) =>
-          item.setTitle("Research this folder").setIcon("search").onClick(() => { void researchFlow.researchFolder(file.path); }));
+          item.setTitle("Research this folder").setIcon("search").onClick(() => { if (needReady()) guard(researchFlow.researchFolder(file.path)); }));
       }),
     );
 
+    const resumed = [...this.data.jobs];
+    this.stopFns = [
+      () => queue.shutdown(),
+      () => { for (const t of timers) window.clearTimeout(t); timers.clear(); },
+      () => { for (const m of [...openModals]) m.close(); },
+    ];
+
     // Nothing is enqueued from vault events until the layout is ready (avoids startup create-event storms).
     this.app.workspace.onLayoutReady(() => {
+      ready = true;
       researchFlow.markReady();
       pdfFlow.markReady();
-      queue.restore(this.data.jobs);
+      queue.restore(resumed);
     });
   }
 
   // Deliberately no queue.cancelAll() here: it persists [] and would wipe the resume list.
-  onunload(): void {}
+  // shutdown() stops work without persisting, so data.json keeps the resume list.
+  onunload(): void {
+    for (const f of this.stopFns) { try { f(); } catch { /* ignore */ } }
+    this.stopFns = [];
+  }
 }

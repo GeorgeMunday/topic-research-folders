@@ -70,3 +70,15 @@ describe("settings", () => {
     expect(mergeData({ settings: { triggerSuffix: "!!" } }).settings.triggerSuffix).toBe("!!");
   });
 });
+
+describe("mergeData entry validation", () => {
+  test("drops malformed jobs", () => {
+    const good = { id: "pdf:a.pdf", kind: "pdf", path: "a.pdf" };
+    const d = mergeData({ jobs: [good, { kind: "pdf", path: "x" }, { id: "1", kind: "pdf" }, { id: "2", kind: "other", path: "p" }, null, 5] });
+    expect(d.jobs).toEqual([good]);
+  });
+  test("drops malformed processedPdfs entries", () => {
+    const d = mergeData({ processedPdfs: { ok: { path: "a", date: "d" }, a: { path: "a" }, b: { date: "d" }, c: null, d: "x" } });
+    expect(d.processedPdfs).toEqual({ ok: { path: "a", date: "d" } });
+  });
+});

@@ -38,10 +38,12 @@ export class JobQueue {
   private running = new Set<Active>();
   private idleWaiters: Array<() => void> = [];
   private persistChain: Promise<void> = Promise.resolve();
+  private stopped = false;
 
   constructor(private run: Runner, private opts: QueueOpts) {}
 
   add(job: Job): boolean {
+    if (this.stopped) return false;
     const k = keyOf(job);
     if (this.queue.some((j) => keyOf(j) === k)) return false;
     for (const a of this.running) if (!a.signal.cancelled && keyOf(a.job) === k) return false;
@@ -52,6 +54,7 @@ export class JobQueue {
   }
 
   restore(jobs: Job[]): void {
+    if (this.stopped) return;
     let added = false;
     for (const job of jobs) {
       const k = keyOf(job);
@@ -72,6 +75,13 @@ export class JobQueue {
     this.checkIdle();
   }
 
+  /** Stop without persisting, so the last saved snapshot stays as the resume list. */
+  shutdown(): void {
+    this.stopped = true;
+    this.queue = [];
+    for (const a of this.running) { a.signal.cancelled = true; a.wake?.(); }
+  }
+
   idle(): Promise<void> {
     if (this.isIdle()) return this.persistChain;
     return new Promise((resolve) => this.idleWaiters.push(resolve));
@@ -88,6 +98,7 @@ export class JobQueue {
   }
 
   private persistNow(): Promise<void> {
+    if (this.stopped) return this.persistChain;
     const jobs = this.snapshot();
     this.persistChain = this.persistChain
       .then(() => this.opts.persist(jobs))
@@ -108,6 +119,7 @@ export class JobQueue {
   }
 
   private pump(): void {
+    if (this.stopped) return;
     while (this.queue.length > 0 && this.running.size < Math.max(1, this.opts.maxConcurrent())) {
       const job = this.queue.shift()!;
       const active: Active = { job, signal: { cancelled: false } };
