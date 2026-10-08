@@ -53,3 +53,34 @@ test("quotes in frontmatter escaped", () => {
   expect(renderNote(note, { topic: 'The "Big" one', subtopic: "A", date: "2026-10-08" }))
     .toContain('topic: "The \\"Big\\" one"');
 });
+
+test("newline in topic yields single-line quoted frontmatter", () => {
+  const md = renderNote(note, { topic: "Line one\nline two\r\nthree", subtopic: "A", date: "2026-10-08", source: "a\nb.pdf", pages: "1\n2" });
+  const fm = md.split("\n---")[0].split("\n");
+  expect(fm).toContain('topic: "Line one line two three"');
+  expect(fm).toContain('source: "[[a b.pdf]]"');
+  expect(fm).toContain('pages: "1 2"');
+});
+test("multi-line summary stays inside one blockquote line", () => {
+  const md = renderNote({ ...note, summary: "First line\nsecond line" }, { topic: "T", subtopic: "S", date: "2026-10-08" });
+  expect(md).toContain("> First line second line\n");
+  expect(md).not.toContain("\nsecond line\n");
+});
+test("backslash in topic escaped", () => {
+  expect(renderNote(note, { topic: "C:\\notes", subtopic: "A", date: "2026-10-08" }))
+    .toContain('topic: "C:\\\\notes"');
+});
+test("empty keyPoints does not crash", () => {
+  const md = renderNote({ ...note, keyPoints: [] }, { topic: "T", subtopic: "S", date: "2026-10-08" });
+  expect(md).toContain("## Key points\n\n## In plain words");
+});
+test("multi-line title and key points collapse to one line", () => {
+  const md = renderNote({ ...note, title: "Two\nlines", keyPoints: ["a\nb"] }, { topic: "T", subtopic: "S", date: "2026-10-08" });
+  expect(md).toContain("# Two lines\n");
+  expect(md).toContain("## Key points\n- a b\n");
+});
+test("multi-line subfolder why stays single-line in overview", () => {
+  const md = renderOverview({ topic: "T", summary: "S", subfolders: [{ name: "A", why: "x\ny" }] },
+    [{ subfolder: "A", noteTitles: [] }], "2026-10-08");
+  expect(md).toContain("  x y\n");
+});

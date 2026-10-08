@@ -1,15 +1,18 @@
 import type { NoteContent, Outline } from "../types";
 
-// Wrap a value as a double-quoted YAML scalar, escaping backslashes and quotes.
+// Collapse any run of whitespace (including line breaks) to one space, then trim.
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+// Wrap a value as a single-line double-quoted YAML scalar, escaping backslashes and quotes.
 function yamlString(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return `"${oneLine(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 // Key points that start with whitespace are nested under the previous point.
-function renderKeyPoints(points: string[]): string {
-  return points
-    .map((p) => (/^\s/.test(p) ? `  - ${p.trim()}` : `- ${p.trim()}`))
-    .join("\n");
+function renderKeyPoints(points: string[]): string[] {
+  return points.map((p) => (/^\s/.test(p) ? `  - ${oneLine(p)}` : `- ${oneLine(p)}`));
 }
 
 const QA_BLOCK = ["## Questions & Answers", "", "**Q:** ", "**A:** "];
@@ -24,15 +27,15 @@ export function renderNote(
   frontmatter.push("tags: [research]", "---");
 
   const body = [
-    `# ${note.title}`,
+    `# ${oneLine(note.title)}`,
     "",
-    `> ${note.summary}`,
+    `> ${oneLine(note.summary)}`,
     "",
     "## Key points",
-    renderKeyPoints(note.keyPoints),
+    ...renderKeyPoints(note.keyPoints),
     "",
     "## In plain words",
-    note.plainWords,
+    oneLine(note.plainWords),
     "",
     "## My notes",
     "",
@@ -48,7 +51,7 @@ export function renderOverview(
   links: { subfolder: string; noteTitles: string[] }[],
   date: string,
 ): string {
-  const why = new Map(outline.subfolders.map((s) => [s.name, s.why]));
+  const why = new Map(outline.subfolders.map((s) => [s.name, oneLine(s.why)]));
   const frontmatter = [
     "---",
     `topic: ${yamlString(outline.topic)}`,
@@ -60,16 +63,16 @@ export function renderOverview(
 
   const sections: string[] = [];
   for (const link of links) {
-    sections.push(`- **${link.subfolder}**`);
+    sections.push(`- **${oneLine(link.subfolder)}**`);
     const reason = why.get(link.subfolder);
     if (reason) sections.push(`  ${reason}`);
-    for (const title of link.noteTitles) sections.push(`  - [[${title}]]`);
+    for (const title of link.noteTitles) sections.push(`  - [[${oneLine(title)}]]`);
   }
 
   const body = [
-    `# ${outline.topic}`,
+    `# ${oneLine(outline.topic)}`,
     "",
-    `> ${outline.summary}`,
+    `> ${oneLine(outline.summary)}`,
     "",
     "## Subfolders",
     "",
@@ -104,14 +107,14 @@ export function renderSourceSummary(
   }
   const sections: string[] = [];
   for (const [subfolder, titles] of bySubfolder) {
-    sections.push(`- **${subfolder}**`);
-    for (const title of titles) sections.push(`  - [[${title}]]`);
+    sections.push(`- **${oneLine(subfolder)}**`);
+    for (const title of titles) sections.push(`  - [[${oneLine(title)}]]`);
   }
 
   const body = [
-    `# ${pdfName} - Summary`,
+    `# ${oneLine(pdfName)} - Summary`,
     "",
-    `> ${summary}`,
+    `> ${oneLine(summary)}`,
     "",
     "## Extracted notes",
     "",
