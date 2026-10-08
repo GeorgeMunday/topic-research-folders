@@ -1,0 +1,9 @@
+{
+  "id": "topic-research-folders",
+  "name": "Topic Research Folders",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Create a folder ending in a trigger suffix and get an AI-researched subfolder outline and notes.",
+  "author": "georg",
+  "isDesktopOnly": false
+}

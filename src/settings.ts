@@ -1,0 +1,1 @@
+export interface Settings {apiKey:string; model:string; useWebSearch:boolean; triggerSuffix:string; stripSuffix:boolean; maxSubfolders:number; notesPerSubfolder:number; maxDepth:number; maxConcurrent:number; maxRetries:number; processPdfs:boolean; pdfPagesPerChunk:number; confirmAbovePages:number;}
