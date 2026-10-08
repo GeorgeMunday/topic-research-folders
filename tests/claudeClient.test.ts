@@ -109,3 +109,40 @@ test("reads current settings each call", async () => {
   expect(reqs[0].headers["x-api-key"]).toBe("test-key-1");
   expect(reqs[1].headers["x-api-key"]).toBe("test-key-2");
 });
+
+test("stop_reason max_tokens -> ParseError before extraction", async () => {
+  const { http } = fake({ stop_reason: "max_tokens", content: [{ type: "text", text: '{"a": [1,' }] });
+  const err = await new ClaudeClient(http, cfg()).outline("T", [], 5).catch(e => e);
+  expect(err).toBeInstanceOf(ParseError);
+  expect(err.message).toBe("Response truncated (max_tokens)");
+});
+
+test("empty or whitespace retry-after -> undefined", async () => {
+  for (const v of ["", "   "]) {
+    const { http } = fake({ error: { message: "x" } }, 429, { "retry-after": v });
+    const err = await new ClaudeClient(http, cfg()).outline("T", [], 5).catch(e => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.retryAfterMs).toBeUndefined();
+  }
+});
+
+test("200 with null/undefined json -> ParseError", async () => {
+  for (const j of [undefined, null]) {
+    const { http } = fake(j);
+    await expect(new ClaudeClient(http, cfg()).outline("T", [], 5)).rejects.toBeInstanceOf(ParseError);
+  }
+});
+
+test("non-200 with undefined json -> ApiError HTTP status", async () => {
+  const { http } = fake(undefined, 503);
+  const err = await new ClaudeClient(http, cfg()).outline("T", [], 5).catch(e => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err.message).toBe("HTTP 503");
+});
+
+test("api key absent from error message and String(error)", async () => {
+  const { http } = fake({}, 401);
+  const err = await new ClaudeClient(http, cfg()).outline("T", [], 5).catch(e => e);
+  expect(err.message).not.toContain("test-key-123");
+  expect(String(err)).not.toContain("test-key-123");
+});

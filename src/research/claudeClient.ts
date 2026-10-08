@@ -55,13 +55,14 @@ export class ClaudeClient implements ResearchClient {
     if (res.status !== 200) {
       const msg = res.json?.error?.message;
       const raw = header(res.headers, "retry-after");
-      const secs = raw === undefined ? NaN : Number(raw);
+      const secs = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
       throw new ApiError(
         typeof msg === "string" && msg ? msg : `HTTP ${res.status}`,
         res.status,
         Number.isFinite(secs) && secs >= 0 ? secs * 1000 : undefined,
       );
     }
+    if (res.json?.stop_reason === "max_tokens") throw new ParseError("Response truncated (max_tokens)");
     return lastJsonText(res.json);
   }
 
