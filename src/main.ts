@@ -126,6 +126,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
           this.statusEl.style.display = r + q === 0 ? "none" : "";
         },
         onFailed: (job, err) => {
+          pdfFlow.dropCache(job.path);
           notify.error(`Research job failed (${job.kind}: ${job.path}): ${err instanceof Error ? err.message : "unexpected error"}`);
         },
         onPersistError: (e) => {
@@ -147,6 +148,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       today: localDate,
       enqueue: (j) => queue.add(j),
       listPdfs,
+      queuePdfs: (paths) => pdfFlow.queuePaths(paths, { force: false }),
     });
 
     pdfFlow = new PdfFlow({
@@ -229,6 +231,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       callback: () => {
         if (!needReady()) return;
         queue.cancelAll();
+        pdfFlow.dropCache();
         new Notice("Cancelled all research jobs.");
       },
     });

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import { PdfFlow, type PdfDeps } from "../src/flows/pdfFlow";
 import { VaultWriter, type VaultLike } from "../src/vault/writer";
-import { ApiError } from "../src/jobs/queue";
+import { ApiError, JobQueue } from "../src/jobs/queue";
 import { sha256 } from "../src/pdf/chunk";
 import type { Job, PdfExtraction, ExtractedNote } from "../src/types";
 import type { Settings } from "../src/settings";
@@ -505,5 +505,107 @@ describe("fix round 1", () => {
     await expect(c.flow.onFileEvent("Topic/a.pdf")).resolves.toBeUndefined();
     expect(c.errors.length).toBe(1);
     expect(c.errors[0]).toContain("boom");
+  });
+});
+
+describe("queuePaths and chunk cache", () => {
+  test("queuePaths(force:false) runs the full pipeline (batch confirm) even before ready", async () => {
+    const c = setup({}, false);
+    const paths = ten.map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return `Topic/d${i}.pdf`; });
+    await c.flow.queuePaths(paths, { force: false });
+    await fire(c);
+    expect(c.confirms.length).toBe(1);
+    expect(c.confirms[0]).toContain("30 PDFs");
+    expect(c.enqueued.length).toBe(30);
+  });
+
+  test("queuePaths(force:false) skips already-processed hashes and confirm-declined batches enqueue nothing", async () => {
+    const c = setup({ confirmAbovePages: 5 });
+    c.confirmAnswer.value = false;
+    c.processed[await sha256(ten[0])] = { path: "old.pdf", date: "d" };
+    const paths = ten.slice(0, 12).map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return `Topic/d${i}.pdf`; });
+    await c.flow.queuePaths(paths, { force: false });
+    await fire(c);
+    expect(c.confirms[0]).toContain("11 PDFs");
+    expect(c.enqueued).toEqual([]);
+  });
+
+  const chunkSetup = () => {
+    const c = setup({ pdfPagesPerChunk: 1 });
+    c.files.set("Topic/a.pdf", pdf3);
+    return c;
+  };
+  const impl = (c: Ctx, failAt: number, err: () => Error) => {
+    let failed = false;
+    c.extract.mockImplementation(async (...a: any[]): Promise<PdfExtraction> => {
+      const off = a[3] as number;
+      if (off === failAt && !failed) { failed = true; throw err(); }
+      return { summary: "sum", notes: [note("Anatomy", `N${off}`, [`k${off}`], String(off + 1))] };
+    });
+  };
+  const queueFor = (c: Ctx) => new JobQueue(c.flow.run, {
+    maxConcurrent: () => 1, maxRetries: () => 3,
+    persist: async () => {}, sleep: async () => {}, rand: () => 0.5,
+    onChange: () => {}, onFailed: () => {},
+  });
+
+  test("retry after a retryable error on chunk 2 does not resend chunk 1; result merges all chunks", async () => {
+    const c = chunkSetup();
+    impl(c, 1, () => new ApiError("overloaded", 503));
+    const q = queueFor(c);
+    q.add(job("Topic/a.pdf"));
+    await q.idle();
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 1, 2]);
+    expect(c.marked.length).toBe(1);
+    for (const t of ["N0", "N1", "N2"]) expect(c.vault.files.has(`Topic/Anatomy/${t}.md`)).toBe(true);
+  });
+
+  test("cache is cleared after success: re-running the same bytes re-extracts every chunk", async () => {
+    const c = chunkSetup();
+    impl(c, 1, () => new ApiError("overloaded", 503));
+    const q = queueFor(c);
+    q.add(job("Topic/a.pdf"));
+    await q.idle();
+    c.extract.mockClear();
+    delete c.processed[await sha256(pdf3)];
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+  });
+
+  test("cache is cleared on non-retryable failure", async () => {
+    const c = chunkSetup();
+    impl(c, 1, () => new ApiError("bad request", 400));
+    await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).resolves.toBeUndefined();
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1]);
+    c.extract.mockClear();
+    impl(c, -1, () => new Error("x"));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+  });
+
+  test("cache is cleared on cancellation", async () => {
+    const c = chunkSetup();
+    const sig = { cancelled: false };
+    c.extract.mockImplementation(async (...a: any[]) => {
+      if (a[3] === 1) sig.cancelled = true;
+      return { summary: "s", notes: [note("Anatomy", `N${a[3]}`, ["k"], "1")] };
+    });
+    await c.flow.run(job("Topic/a.pdf"), sig, noCp);
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1]);
+    c.extract.mockClear();
+    impl(c, -1, () => new Error("x"));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+  });
+
+  test("dropCache(path) forgets chunks of a job the queue gave up on", async () => {
+    const c = chunkSetup();
+    impl(c, 1, () => new ApiError("overloaded", 503));
+    await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(ApiError);
+    c.flow.dropCache("Topic/a.pdf");
+    c.extract.mockClear();
+    impl(c, -1, () => new Error("x"));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
   });
 });

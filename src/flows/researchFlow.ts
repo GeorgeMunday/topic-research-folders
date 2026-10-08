@@ -19,6 +19,7 @@ export interface ResearchDeps {
   today: () => string;
   enqueue: (job: Job) => boolean;
   listPdfs: (folder: string) => string[];
+  queuePdfs: (paths: string[]) => Promise<void>;
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -131,7 +132,8 @@ export class ResearchFlow {
     await writer.writeOverview(job.path, ov, links, today());
 
     if (s.processPdfs) {
-      for (const p of this.deps.listPdfs(job.path)) this.deps.enqueue({ id: `pdf:${p}`, kind: "pdf", path: p });
+      const pdfs = this.deps.listPdfs(job.path);
+      if (pdfs.length > 0) await this.deps.queuePdfs(pdfs);
     }
     notify.info(`Researched ${topic}: ${links.length} subfolder${links.length === 1 ? "" : "s"}${failures ? ` (${failures} failed)` : ""}`);
   };

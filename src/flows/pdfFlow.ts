@@ -75,6 +75,9 @@ export class PdfFlow {
   private eventChain: Promise<unknown> = Promise.resolve();
   private flushChain: Promise<unknown> = Promise.resolve();
   private timerGen = 0;
+  // Completed chunk results per file hash, kept across retry attempts so a retry does not resend them.
+  private chunkCache = new Map<string, Map<number, PdfExtraction>>();
+  private cacheHashByPath = new Map<string, string>();
 
   constructor(private deps: PdfDeps) {}
 
@@ -100,6 +103,14 @@ export class PdfFlow {
       if (!isPdf(p)) continue;
       await this.serial(() => this.consider(p, opts.force));
     }
+  }
+
+  /** Forget cached chunk results for one job path (or all, with no argument), e.g. when a job is dropped. */
+  dropCache(path?: string): void {
+    if (path === undefined) { this.chunkCache.clear(); this.cacheHashByPath.clear(); return; }
+    const h = this.cacheHashByPath.get(path);
+    if (h !== undefined) this.chunkCache.delete(h);
+    this.cacheHashByPath.delete(path);
   }
 
   private report(e: unknown): void {
@@ -174,6 +185,8 @@ export class PdfFlow {
     const hash = await sha256(bytes);
     if (processed()[hash] || this.inFlight.has(hash)) return;
     this.inFlight.add(hash);
+    // Cached chunk results survive only a retryable failure; every other exit clears them.
+    let keep = false;
     try {
       const file = baseName(job.path);
       const client = this.deps.client();
@@ -200,13 +213,20 @@ export class PdfFlow {
       }
       if (split.chunks.length === 0) return;
 
+      let done = this.chunkCache.get(hash);
+      if (!done) { done = new Map(); this.chunkCache.set(hash, done); }
+      this.cacheHashByPath.set(job.path, hash);
       const results: PdfExtraction[] = [];
-      for (const chunk of split.chunks) {
-        if (signal.cancelled) return;
+      for (const [i, chunk] of split.chunks.entries()) {
+        if (signal.cancelled) { keep = false; return; }
+        const cached = done.get(i);
+        if (cached) { results.push(cached); continue; }
         try {
-          results.push(await client.extractPdf(root.topic, subfolders, chunk.base64, chunk.firstPage - 1));
+          const r = await client.extractPdf(root.topic, subfolders, chunk.base64, chunk.firstPage - 1);
+          done.set(i, r);
+          results.push(r);
         } catch (e) {
-          if (isRetryable(e)) throw e;
+          if (isRetryable(e)) { keep = true; throw e; }
           notify.error(`Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`);
           return;
         }
@@ -218,6 +238,7 @@ export class PdfFlow {
       notify.info(`Extracted ${merged.notes.length} notes from ${file}`);
     } finally {
       this.inFlight.delete(hash);
+      if (!keep) { this.chunkCache.delete(hash); this.cacheHashByPath.delete(job.path); }
     }
   };
 }
