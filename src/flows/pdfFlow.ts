@@ -69,7 +69,8 @@ function mergeExtractions(results: PdfExtraction[]): PdfExtraction {
 export class PdfFlow {
   private ready = false;
   private pending: Entry[] = [];
-  private pendingHashes = new Set<string>();
+  private pendingHashes = new Map<string, Entry>();
+  private active = 0;
   private inFlight = new Set<string>();
   private eventChain: Promise<unknown> = Promise.resolve();
   private flushChain: Promise<unknown> = Promise.resolve();
@@ -101,8 +102,13 @@ export class PdfFlow {
     }
   }
 
+  private report(e: unknown): void {
+    try { this.deps.notify.error(`PDF analysis problem: ${e instanceof Error ? e.message : "unexpected error"}`); } catch { /* ignore */ }
+  }
+
   private serial(fn: () => Promise<void>): Promise<void> {
-    const p = this.eventChain.then(fn).catch(() => {});
+    this.active++;
+    const p = this.eventChain.then(fn).catch((e) => this.report(e)).then(() => { this.active--; });
     this.eventChain = p;
     return p;
   }
@@ -114,7 +120,9 @@ export class PdfFlow {
     try { bytes = await readBinary(path); } catch { return; }
     const hash = await sha256(bytes);
     if (force) await forget(hash);
-    if (processed()[hash] || this.inFlight.has(hash) || this.pendingHashes.has(hash)) return;
+    if (processed()[hash] || this.inFlight.has(hash)) return;
+    const dup = this.pendingHashes.get(hash);
+    if (dup) { dup.path = path; return; }
     const entry: Entry = { path, hash, pageCount: 0 };
     try {
       entry.pageCount = (await inspectPdf(bytes)).pageCount;
@@ -122,7 +130,7 @@ export class PdfFlow {
       entry.error = e instanceof PdfError ? e.reason : "unreadable";
     }
     this.pending.push(entry);
-    this.pendingHashes.add(hash);
+    this.pendingHashes.set(hash, entry);
     this.schedule();
   }
 
@@ -130,7 +138,8 @@ export class PdfFlow {
     const gen = ++this.timerGen;
     this.deps.setTimer(() => {
       if (gen !== this.timerGen) return;
-      this.flushChain = this.flushChain.then(() => this.flush()).catch(() => {});
+      if (this.active > 0) { this.schedule(); return; }
+      this.flushChain = this.flushChain.then(() => this.flush()).catch((e) => this.report(e));
     }, DEBOUNCE_MS);
   }
 
@@ -147,8 +156,7 @@ export class PdfFlow {
       if (good.length === 0) return;
       const total = good.reduce((n, e) => n + e.pageCount, 0);
       if (total > settings().confirmAbovePages) {
-        const msg = `Analyse ${good.length} PDF${good.length === 1 ? "" : "s"} (${total} pages in total)? ` +
-          `That is ${good.length} PDFs and ${total} pages to send to Claude, which can use a lot of API credit.`;
+        const msg = `Analyse ${good.length} PDFs, ${total} pages in total? This sends them all to Claude and can use a lot of API credit.`;
         let ok = false;
         try { ok = await confirm.confirm(msg); } catch { ok = false; }
         if (!ok) return;
@@ -159,7 +167,7 @@ export class PdfFlow {
     }
   }
 
-  run: Runner = async (job) => {
+  run: Runner = async (job, signal) => {
     const { readBinary, processed, notify, writer, settings, today, markProcessed } = this.deps;
     let bytes: ArrayBuffer;
     try { bytes = await readBinary(job.path); } catch { return; }
@@ -194,6 +202,7 @@ export class PdfFlow {
 
       const results: PdfExtraction[] = [];
       for (const chunk of split.chunks) {
+        if (signal.cancelled) return;
         try {
           results.push(await client.extractPdf(root.topic, subfolders, chunk.base64, chunk.firstPage - 1));
         } catch (e) {
@@ -202,6 +211,7 @@ export class PdfFlow {
           return;
         }
       }
+      if (signal.cancelled) return;
       const merged = mergeExtractions(results);
       await writer.writeExtracted(root.root, root.topic, file, merged, today());
       await markProcessed(hash, job.path);

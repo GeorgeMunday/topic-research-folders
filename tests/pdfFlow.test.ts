@@ -82,7 +82,7 @@ interface Ctx {
   extract: ReturnType<typeof vi.fn>; settings: Settings; forgotten: string[];
   confirmAnswer: { value: boolean | Promise<boolean> };
   readCalls: { active: number; max: number; total: number };
-  client: { v: any };
+  client: { v: any }; writer: VaultWriter; slow: { ms: number };
 }
 
 function setup(over: Partial<Settings> = {}, ready = true): Ctx {
@@ -108,6 +108,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   const confirmAnswer = { value: true as boolean | Promise<boolean> };
   const readCalls = { active: 0, max: 0, total: 0 };
   const client = { v: { extractPdf: extract } as any };
+  const slow = { ms: 1 };
   const deps: PdfDeps = {
     client: () => client.v, writer,
     notify: { info: (m) => infos.push(m), error: (m) => errors.push(m) },
@@ -115,7 +116,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
     readBinary: async (p) => {
       readCalls.active++; readCalls.total++;
       readCalls.max = Math.max(readCalls.max, readCalls.active);
-      await new Promise((r) => setTimeout(r, 1));
+      await new Promise((r) => setTimeout(r, slow.ms));
       readCalls.active--;
       const b = files.get(p);
       if (!b) throw new Error("ENOENT " + p);
@@ -130,7 +131,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   };
   const flow = new PdfFlow(deps);
   if (ready) flow.markReady();
-  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, timers, extract, settings, forgotten, confirmAnswer, readCalls, client };
+  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, timers, extract, settings, forgotten, confirmAnswer, readCalls, client, writer, slow };
 }
 
 const fire = async (c: Ctx) => { c.timers.at(-1)!(); await c.flow.idle(); };
@@ -434,5 +435,66 @@ describe("run", () => {
     expect(c.errors.length).toBe(1);
     expect(c.marked).toEqual([]);
     expect(c.order).toEqual([]);
+  });
+});
+
+describe("fix round 1", () => {
+  test("rename while pending: job follows the newest path and is processed", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/a.pdf");
+    c.files.delete("Topic/a.pdf");
+    c.files.set("Topic/b.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/b.pdf");
+    await fire(c);
+    expect(c.enqueued).toEqual([job("Topic/b.pdf")]);
+    await c.flow.run(c.enqueued[0], noSignal, noCp);
+    expect(c.marked.length).toBe(1);
+  });
+
+  test("timer firing mid-batch while reads are still queued does not split the confirmation", async () => {
+    const c = setup();
+    c.slow.ms = 2;
+    const all = Promise.all(ten.map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return c.flow.onFileEvent(`Topic/d${i}.pdf`); }));
+    while (c.timers.length < 3) await new Promise((r) => setTimeout(r, 1));
+    expect(c.timers.length).toBeLessThan(30); // later events are still queued
+    c.timers.at(-1)!(); // debounce elapsed while later events are still being read
+    await new Promise((r) => setTimeout(r, 1));
+    expect(c.confirms.length).toBe(0);
+    await all;
+    await fire(c);
+    expect(c.confirms.length).toBe(1);
+    expect(c.confirms[0]).toContain("30 PDFs");
+    expect(c.confirms[0]).toContain("300 pages");
+    expect(c.enqueued.length).toBe(30);
+  });
+
+  test("confirm message does not repeat counts", async () => {
+    const c = setup({ confirmAbovePages: 5 });
+    c.files.set("Topic/a.pdf", ten[0]); c.files.set("Topic/b.pdf", ten[1]);
+    await c.flow.onFileEvent("Topic/a.pdf"); await c.flow.onFileEvent("Topic/b.pdf");
+    await fire(c);
+    expect(c.confirms[0].match(/20 pages/g)!.length).toBe(1);
+    expect(c.confirms[0].match(/2 PDFs/g)!.length).toBe(1);
+  });
+
+  test("run stops when cancelled between chunks", async () => {
+    const c = setup();
+    c.files.set("Topic/big.pdf", pdf120);
+    const sig = { cancelled: false };
+    c.extract.mockImplementation(async () => { sig.cancelled = true; return { summary: "s", notes: [note("Anatomy", "N", ["a"], "1")] }; });
+    await c.flow.run(job("Topic/big.pdf"), sig, noCp);
+    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.order).toEqual([]);
+    expect(c.marked).toEqual([]);
+  });
+
+  test("unexpected errors in event handling are reported, not swallowed", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.writer.findResearchRoot = async () => { throw new Error("boom"); };
+    await expect(c.flow.onFileEvent("Topic/a.pdf")).resolves.toBeUndefined();
+    expect(c.errors.length).toBe(1);
+    expect(c.errors[0]).toContain("boom");
   });
 });
