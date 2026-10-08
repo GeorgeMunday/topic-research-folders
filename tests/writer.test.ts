@@ -155,6 +155,20 @@ describe("writeExtracted", () => {
   });
 });
 
+describe("isResearchRoot", () => {
+  const marked = "---\nresearch-root: true\n---\n";
+  test("true only for a folder with its own marked overview", async () => {
+    const { v, w } = setup();
+    v.files.set("Black holes/Black holes - Overview.md", marked);
+    v.folders.add("Black holes/Anatomy");
+    v.files.set("Plain/Plain - Overview.md", "---\ntopic: x\n---\n");
+    expect(await w.isResearchRoot("Black holes")).toBe(true);
+    expect(await w.isResearchRoot("Black holes/Anatomy")).toBe(false);
+    expect(await w.isResearchRoot("Plain")).toBe(false);
+    expect(await w.isResearchRoot("Missing")).toBe(false);
+  });
+});
+
 describe("listSubfolders", () => {
   test("returns only folder names", () => {
     const { v, w } = setup();

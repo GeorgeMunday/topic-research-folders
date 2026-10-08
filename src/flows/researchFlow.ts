@@ -82,6 +82,12 @@ export class ResearchFlow {
       return;
     }
     const topic = baseName(job.path);
+    // A fresh job on a folder that already is a research root (e.g. synced in, or re-triggered) would duplicate work.
+    const fresh = !job.approved && job.done.length === 0;
+    if (fresh && (await writer.isResearchRoot(job.path))) {
+      notify.info(`"${topic}" is already researched.`);
+      return;
+    }
     // findResearchRoot looks at ancestors of the path it is given.
     const r = await writer.findResearchRoot(job.path);
     const parents = r ? [...r.parents, r.topic] : [];

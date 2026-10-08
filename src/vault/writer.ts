@@ -67,6 +67,11 @@ export class VaultWriter {
     return false;
   }
 
+  /** True when the folder itself holds a marked overview (is already a research root). */
+  isResearchRoot(path: string): Promise<boolean> {
+    return this.hasMarkedOverview(path);
+  }
+
   // Case-insensitive collision check against what already exists in a folder.
   private taken(folder: string, name: string): boolean {
     if (this.vault.exists(join(folder, name))) return true;

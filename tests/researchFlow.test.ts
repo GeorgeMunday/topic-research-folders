@@ -302,6 +302,36 @@ describe("run", () => {
     expect(ov).toContain("[[T/B/B note|B note]]");
   });
 
+  test("fresh job on a folder that already has its own marked overview is skipped with a notice", async () => {
+    const s = setup();
+    s.v.folders.add("T");
+    s.v.files.set("T/T - Overview.md", ROOT_MARK);
+    await s.run(rjob("T"));
+    expect(s.infos).toEqual(["\"T\" is already researched."]);
+    expect(s.calls.outline).toEqual([]);
+    expect(s.calls.approve).toBe(0);
+    expect(s.calls.notes).toEqual([]);
+    expect(s.v.files.size).toBe(1);
+  });
+
+  test("resumed job continues even though its overview already exists", async () => {
+    const s = setup();
+    s.v.folders.add("T");
+    s.v.files.set("T/T - Overview.md", ROOT_MARK);
+    await s.run(rjob("T", { approved: [A, B], done: ["A"] }));
+    expect(s.infos.some((m) => m.includes("already researched"))).toBe(false);
+    expect(s.calls.notes.map((c) => c[2])).toEqual(["B"]);
+    expect(s.v.files.has("T/B/B note.md")).toBe(true);
+  });
+
+  test("an unmarked overview or a marked ancestor does not count as already researched", async () => {
+    const s = setup();
+    s.v.folders.add("T");
+    s.v.files.set("T/T - Overview.md", "---\ntopic: x\n---\n");
+    await s.run(rjob("T"));
+    expect(s.calls.approve).toBe(1);
+  });
+
   test("run re-checks depth at start", async () => {
     const s = setup({ settings: { maxDepth: 1 } });
     s.v.folders.add("Black holes");
