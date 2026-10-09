@@ -31,7 +31,7 @@ describe("README", () => {
 
   test("sections come in the requested order", () => {
     expect(headings).toEqual([
-      "What it does", "How to use", "Example output", "Settings", "Install", "API key and cost", "Privacy", "Troubleshooting", "Licence",
+      "What it does", "How to use", "Example output", "Tips", "Settings", "Install", "API key and cost", "Privacy", "Troubleshooting", "Licence",
     ]);
   });
 
@@ -48,6 +48,27 @@ describe("README", () => {
     }
   });
 
+  test("How to use explains the explorer icons, the pop-up, numbered folders, Sources and Undo", () => {
+    const s = section("How to use");
+    for (const needle of ["spinner", "sparkle", "check", "warning", "click", "Select all", "Add your own folder", "drag", "01 - ", "Study path", "Number folders in learning order", "## Sources".replace("## ", ""), "Undo last research", "Undo this research", "trash", "ready to review"]) {
+      expect(s.toLowerCase(), needle).toContain(needle.toLowerCase());
+    }
+  });
+
+  test("nothing in the README describes the removed review Notice or a loading pop-up", () => {
+    expect(readme).not.toMatch(/Review notice/i);
+    expect(readme).not.toMatch(/Suggestions ready for/i);
+    expect(readme).not.toMatch(/notice says/i);
+    expect(readme).not.toMatch(/loading (modal|dialog|pop-?up)/i);
+  });
+
+  test("Tips shows how to name folders inside a parent topic", () => {
+    const s = section("Tips");
+    expect(s).toContain("c#/intro+");
+    expect(s).toContain("Introduction to C#");
+    expect(s.split("\n").filter((l) => l.startsWith("- ")).length).toBeGreaterThanOrEqual(3);
+  });
+
   test("Example output shows the tree with Questions and Answers files and a coding note with a code example", () => {
     const s = section("Example output");
     expect(s).toContain("Ownership - Questions.md");
@@ -55,6 +76,9 @@ describe("README", () => {
     expect(s).toContain("```rust");
     expect(s).toContain("## Code examples");
     expect(s).toContain("## Common mistakes");
+    expect(s).toContain("01 - Ownership");
+    expect(s).toContain("## Sources");
+    expect(s).toContain("## Study path");
     expect(s).not.toContain("Questions & Answers");
   });
 
@@ -62,7 +86,7 @@ describe("README", () => {
     const lines = section("Settings").split("\n").filter((l) => l.startsWith("- "));
     for (const name of [
       "Anthropic API key", "Model", "Use web search", "Trigger suffix", "Remove suffix", "Subfolders per topic", "Notes per subfolder",
-      "Maximum nesting depth", "Concurrent jobs", "Retries", "Analyse PDFs", "Pages per PDF chunk", "Confirm above pages",
+      "Number folders in learning order", "Maximum nesting depth", "Concurrent jobs", "Retries", "Analyse PDFs", "Pages per PDF chunk", "Confirm above pages",
     ]) expect(lines.some((l) => l.includes(name)), name).toBe(true);
   });
 
@@ -90,6 +114,7 @@ describe("README", () => {
     expect(s).toContain("`*`");
     expect(s).toMatch(/unavailable/i);
     expect(s).toMatch(/spinner/i);
+    expect(s).toMatch(/sparkle/i);
     expect(s).toContain("Cancel all research jobs");
   });
 

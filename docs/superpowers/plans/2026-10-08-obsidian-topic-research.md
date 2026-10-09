@@ -1590,4 +1590,4 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - [x] Tests: only logged items removed, edited files kept, non-empty folders kept, suffix rename undone only if empty, log capped at 20. **Commit** `feat: undo last research`.
 
 ### Task 29: README (section 6)
-- [ ] Test: README mentions each feature and no longer the review Notice or loading modal. **Commit** `docs: README for the new features`.
+- [x] Test: README mentions each feature and no longer the review Notice or loading modal. **Commit** `docs: README for the new features`.
