@@ -1575,7 +1575,7 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - Out of scope, left alone: popout-window spinner, settings-tab tests, cancel-again limitation.
 
 ### Task 24: Explorer status icons (section 1)
-- [ ] Tests (`tests/marks.test.ts`, hub tests updated): transitions, `iconFor`, done fade timer, reduced motion CSS, hub marks/no Notice, fallback status text. **Commit** `feat: show research state as an icon in the file explorer`.
+- [x] Tests (`tests/marks.test.ts`, hub tests updated): transitions, `iconFor`, done fade timer, reduced motion CSS, hub marks/no Notice, fallback status text. **Commit** `feat: show research state as an icon in the file explorer`.
 
 ### Task 25: Suggestion pop-up (section 2)
 - [ ] Tests (`tests/suggestionRows.test.ts`): full-width CSS, inside line, select all/none, add own row (empty ignored), move up/down/drag keeps order, keyboard handler. **Commit** `feat: pop-up shows context, select all, add and reorder`.

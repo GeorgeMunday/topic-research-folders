@@ -45,3 +45,25 @@
 .trf-status { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 .trf-status-icon { display: inline-flex; }
 .trf-status-icon svg { width: 14px; height: 14px; }
+
+/* Explorer marks: one small icon next to the name (see src/ui/marks.ts). */
+.trf-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.trf-mark svg { width: 12px; height: 12px; }
+.trf-mark-clickable { cursor: pointer; }
+.trf-mark-ready { color: var(--interactive-accent); animation: trf-fade-in 0.4s ease-out 1; }
+.trf-mark-done { color: var(--text-muted); animation: trf-fade-out 3s ease-in forwards; }
+.trf-mark-failed { color: var(--text-muted); }
+
+@keyframes trf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes trf-fade-out { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .trf-mark-ready { animation: none; }
+  .trf-mark-done { animation: none; }
+}

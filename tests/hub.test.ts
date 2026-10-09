@@ -11,11 +11,13 @@ function setup() {
   const notices: RecordedNotice[] = [];
   const statuses: string[] = [];
   const spinners: string[][] = [];
+  const markLists: { path: string; state: string }[][] = [];
   const reviews: { outline: Outline; resolve: (v: SubfolderSuggestion[] | null) => void }[] = [];
   const ui: HubUi = {
     notice: (text, opts) => { notices.push({ text, error: !!opts?.error, action: opts?.action }); },
     setStatus: (t) => { statuses.push(t); },
     setSpinners: (p) => { spinners.push([...p]); },
+    setMarks: (m) => { markLists.push(m.map((x) => ({ ...x }))); },
     reviewModal: (outline) => new Promise((resolve) => { reviews.push({ outline, resolve }); }),
   };
   const started: [string, SubfolderSuggestion[]][] = [];
@@ -33,6 +35,7 @@ function setup() {
     hub, notices, statuses, spinners, reviews, started, persisted, accept, missing, hooks,
     status: () => (statuses.length ? statuses[statuses.length - 1] : ""),
     spin: () => (spinners.length ? spinners[spinners.length - 1] : []),
+    ready: () => (markLists.at(-1) ?? []).filter((m) => m.state === "ready").map((m) => m.path),
   };
 }
 
@@ -101,12 +104,10 @@ test("user cancel via the review modal (null): neutral 'Cancelled' notice, spinn
   const id = nextRunId();
   h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
   h.hub.sink(T, { kind: "outline", outline }, research(id));
-  expect(h.notices).toHaveLength(1);
-  expect(h.notices[0].text).toBe("Suggestions ready for Black holes");
-  expect(h.notices[0].error).toBe(false);
-  expect(h.notices[0].action?.label).toBe("Review");
+  expect(h.notices).toHaveLength(0);
+  expect(h.ready()).toEqual([T]);
   expect(h.persisted).toEqual([[{ path: T, outline }]]);
-  h.notices[0].action!.run();
+  h.hub.activate(T);
   expect(h.reviews).toHaveLength(1);
   expect(h.reviews[0].outline).toEqual(outline);
   h.reviews[0].resolve(null);
@@ -142,12 +143,13 @@ test("suggestions ready, then reviewed later: notice with Review action, spinner
   const id = nextRunId();
   h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
   h.hub.sink(T, { kind: "outline", outline }, research(id));
-  expect(h.spin()).toEqual([T]);
-  expect(h.notices.map((n) => n.action?.label)).toEqual(["Review"]);
-  // The outline job finished; the queue is idle but the review is still waiting.
+  expect(h.spin()).toEqual([]);
+  expect(h.ready()).toEqual([T]);
+  expect(h.notices).toEqual([]);
+  // The outline job finished; the queue is idle but the review is still waiting (a sparkle, no status text).
   h.hub.onQueueChange(0, 0);
-  expect(h.spin()).toEqual([T]);
-  expect(h.status()).toBe("Suggestions ready (1)");
+  expect(h.ready()).toEqual([T]);
+  expect(h.status()).toBe("");
   expect(h.reviews).toHaveLength(0);
   const picked = [outline.subfolders[0]];
   const p = h.hub.review();
@@ -177,7 +179,7 @@ test("a repeat outline event for the same run replaces the pending review withou
   const outline2: Outline = { ...outline, summary: "newer" };
   h.hub.sink(T, { kind: "outline", outline }, research(id));
   h.hub.sink(T, { kind: "outline", outline: outline2 }, research(id));
-  expect(h.notices).toHaveLength(1);
+  expect(h.notices).toHaveLength(0);
   expect(h.hub.pending()).toEqual([{ path: T, outline: outline2 }]);
   expect(h.persisted[h.persisted.length - 1]).toEqual([{ path: T, outline: outline2 }]);
 });
@@ -220,20 +222,20 @@ test("resumed job awaiting review: restorePending shows the notice and spinner, 
   ];
   h.hub.restorePending([{ path: T, outline }], jobs);
   expect(h.reviews).toHaveLength(0);
-  expect(h.notices).toHaveLength(1);
-  expect(h.notices[0].text).toBe("Suggestions ready for Black holes");
-  expect(h.notices[0].action?.label).toBe("Review");
+  expect(h.notices).toHaveLength(0);
   expect(h.persisted).toEqual([]);
   expect(h.started).toEqual([]);
   expect(h.hub.pending()).toEqual([{ path: T, outline }]);
-  expect(h.spin()).toEqual(["T/B", "T/x.pdf", T]);
+  expect(h.spin()).toEqual(["T/B", "T/x.pdf"]);
+  expect(h.ready()).toEqual([T]);
   expect(h.status()).toBe("Resuming x.pdf… (+1 more)");
   // The queue finishes the restored jobs without events: idle clears their activity, the review stays.
   h.hub.onQueueChange(0, 0);
-  expect(h.spin()).toEqual([T]);
-  expect(h.status()).toBe("Suggestions ready (1)");
-  // The Review button opens the modal.
-  h.notices[0].action!.run();
+  expect(h.spin()).toEqual([]);
+  expect(h.ready()).toEqual([T]);
+  expect(h.status()).toBe("");
+  // Clicking the sparkle opens the modal.
+  h.hub.activate(T);
   expect(h.reviews).toHaveLength(1);
 });
 
@@ -297,15 +299,17 @@ test("PDF two-stage run: pdf steps + done -> overview notice; keypoint steps spi
   expect(h.status()).toBe("");
 });
 
-test("onQueueChange(0,0) clears spinners and status but keeps spinners of pending reviews", () => {
+test("onQueueChange(0,0) clears spinners and status but keeps the ready marks of pending reviews", () => {
   const h = setup();
   h.hub.sink("A", { kind: "outline", outline }, research(nextRunId()));
   h.hub.sink("B", { kind: "step", text: "Writing" }, research(nextRunId()));
   h.hub.onQueueChange(1, 1);
-  expect(h.spin()).toEqual(["B", "A"]);
+  expect(h.spin()).toEqual(["B"]);
+  expect(h.ready()).toEqual(["A"]);
   h.hub.onQueueChange(0, 0);
-  expect(h.spin()).toEqual(["A"]);
-  expect(h.status()).toBe("Suggestions ready (1)");
+  expect(h.spin()).toEqual([]);
+  expect(h.ready()).toEqual(["A"]);
+  expect(h.status()).toBe("");
   noConsecutiveDuplicates(h.statuses);
   noConsecutiveDuplicates(h.spinners);
 });
@@ -432,17 +436,17 @@ test("fix I2: a trailing failed(Cancelled) of the outline run gives no notice an
   h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
   h.hub.sink(T, { kind: "outline", outline }, research(id));
   h.hub.sink(T, { kind: "failed", error: CANCELLED_MESSAGE }, research(id));
-  expect(h.notices.map((n) => n.text)).toEqual(["Suggestions ready for Black holes"]);
-  expect(h.spin()).toEqual([T]);
+  expect(h.notices).toEqual([]);
+  expect(h.ready()).toEqual([T]);
   expect(h.hub.pending()).toHaveLength(1);
 });
 
-test("fix I2: status after an outline event shows 'Suggestions ready (1)', not 'Choosing folders…'", () => {
+test("fix I2: status after an outline event is empty (the sparkle shows the review), not 'Choosing folders…'", () => {
   const h = setup();
   const id = nextRunId();
   h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
   h.hub.sink(T, { kind: "outline", outline }, research(id));
-  expect(h.status()).toBe("Suggestions ready (1)");
+  expect(h.status()).toBe("");
   expect(h.statuses).not.toContain("Choosing folders…");
 });
 
@@ -466,8 +470,8 @@ describe("fix round 1", () => {
     const outline2: Outline = { ...outline, summary: "newer" };
     h.hub.sink(T, { kind: "outline", outline: outline2 }, research(id2));
     expect(h.hub.pending()).toEqual([{ path: T, outline: outline2 }]);
-    expect(h.notices.at(-1)!.text).toBe("Suggestions ready for Black holes");
-    expect(h.spin()).toEqual([T]);
+    expect(h.notices.at(-1)!.text).toBe(BUSY);
+    expect(h.ready()).toEqual([T]);
   });
 
   test("the approved run may fail synchronously inside startApproved: its notice shows and no spinner is left behind", async () => {
@@ -521,7 +525,7 @@ describe("fix round 1", () => {
     expect(h.hub.pending().map((x) => x.path)).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
     expect(h.persisted).toHaveLength(n + 1);
     expect(h.persisted.at(-1)!.map((x) => x.path)).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
-    expect(h.spin()).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
+    expect(h.ready()).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
     h.reviews[0].resolve([outline.subfolders[0]]);
     await p;
     expect(h.started).toEqual([["Topics/Holes", [outline.subfolders[0]]]]);
@@ -541,7 +545,7 @@ describe("fix round 1", () => {
     h.hub.dropPending(T);
     expect(h.hub.pending().map((x) => x.path)).toEqual(["Stars"]);
     expect(h.persisted.at(-1)!.map((x) => x.path)).toEqual(["Stars"]);
-    expect(h.spin()).toEqual(["Stars"]);
+    expect(h.ready()).toEqual(["Stars"]);
     expect(h.notices).toHaveLength(n);
     // The open review's result is ignored.
     h.reviews[0].resolve([outline.subfolders[0]]);
@@ -587,11 +591,13 @@ describe("item 2: spinner paths", () => {
     expect(h.spin()).toEqual([T]);
     h.hub.sink(T, { kind: "outline", outline }, research(r1));
     h.hub.onQueueChange(0, 0);
-    expect(h.spin()).toEqual([T]);
+    expect(h.spin()).toEqual([]);
+    expect(h.ready()).toEqual([T]);
     const p = h.hub.review(T);
     h.reviews[0].resolve([outline.subfolders[0]]);
     await p;
     expect(h.spin()).toEqual([T]);
+    expect(h.ready()).toEqual([]);
     const r2 = nextRunId();
     h.hub.sink(T, { kind: "writing", index: 1, total: 1, name: "Anatomy" }, research(r2, true));
     h.hub.sink(T, { kind: "done", folders: 1, notes: 3 }, research(r2, true));
@@ -613,14 +619,16 @@ describe("item 2: spinner paths", () => {
     // Queue idle clears running work but keeps a pending review.
     h.hub.sink("A", { kind: "step", text: "x" }, research(nextRunId()));
     h.hub.sink("B", { kind: "outline", outline }, research(nextRunId()));
-    expect(h.spin()).toEqual(["A", "B"]);
+    expect(h.spin()).toEqual(["A"]);
+    expect(h.ready()).toEqual(["B"]);
     h.hub.onQueueChange(0, 0);
-    expect(h.spin()).toEqual(["B"]);
+    expect(h.spin()).toEqual([]);
+    expect(h.ready()).toEqual(["B"]);
   });
 });
 
 describe("item 3: status text and status bar menu", () => {
-  test("status text: 'Researching Black holes…' during research, 'Analysing paper.pdf (chunk 2/6)…' during a pdf run, 'Suggestions ready (N)' with only pending left, empty when idle", () => {
+  test("status text: 'Researching Black holes…' during research, 'Analysing paper.pdf (chunk 2/6)…' during a pdf run, empty with only pending reviews left (the sparkles show them), empty when idle", () => {
     const h = setup();
     const r = nextRunId();
     h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(r));
@@ -632,7 +640,8 @@ describe("item 3: status text and status bar menu", () => {
     expect(h.status()).toBe("Researching Black holes…");
     h.hub.sink(T, { kind: "outline", outline }, research(r));
     h.hub.sink("Stars", { kind: "outline", outline }, research(nextRunId()));
-    expect(h.status()).toBe("Suggestions ready (2)");
+    expect(h.status()).toBe("");
+    expect(h.ready()).toEqual([T, "Stars"]);
     h.hub.cancelAll();
     expect(h.status()).toBe("");
   });

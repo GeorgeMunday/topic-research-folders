@@ -1,6 +1,7 @@
 // Pure progress hub: turns flow/queue events into notices, status text and spinners. No `obsidian` import.
-import type { Job, Outline, PendingReview, SubfolderSuggestion } from "../types";
-import { ProgressTracker, RunGate, nextRunId, noticeFor } from "../progress";
+import type { Job, Outline, PendingReview, Progress, SubfolderSuggestion } from "../types";
+import { ProgressTracker, RunGate, isNeutralMessage, nextRunId, noticeFor } from "../progress";
+import { MarkBoard, type Mark } from "./marks";
 import type { ProgressSink, ProgressSource } from "../progress";
 
 export type { PendingReview };
@@ -8,7 +9,10 @@ export type { PendingReview };
 export interface HubUi {
   notice(text: string, opts?: { error?: boolean; action?: { label: string; run: () => void } }): void;
   setStatus(text: string): void;                 // "" hides the item
+  /** Folders or PDFs being worked on (the spinner). */
   setSpinners(paths: string[]): void;
+  /** Everything else worth an icon: ready to review, done (fades), failed. */
+  setMarks?(marks: Mark[]): void;
   reviewModal(outline: Outline, hooks?: ReviewHooks): Promise<SubfolderSuggestion[] | null>;   // resolves null when closed without Create
 }
 
@@ -24,6 +28,8 @@ export interface HubActions {
   startApproved(path: string, approved: SubfolderSuggestion[], outline: Outline): boolean;
   /** Asks for a new outline of `path` under an edited topic (the review's Re-suggest button). */
   resuggest?(path: string, topic: string): Promise<Outline>;
+  /** Starts the run again for a failed path (`kind` is what failed: research or pdf). */
+  retry?(path: string, kind: ProgressSource["kind"]): void;
   /** False when the folder no longer exists in the vault. */
   pathExists(path: string): boolean;
   persistPending(list: PendingReview[]): void;
@@ -54,8 +60,14 @@ export class ProgressHub {
   // goes on its folder (shared by every key point in it, so it stays until all of them have ended).
   private display = new Map<string, string>();
   private disposed = false;
+  private board: MarkBoard;
+  private failedKind = new Map<string, ProgressSource["kind"]>();
+  private shownMarks = "";
+  private syncing = false;
 
-  constructor(private ui: HubUi, private actions: HubActions) {}
+  constructor(private ui: HubUi, private actions: HubActions, later: (fn: () => void, ms: number) => () => void = (fn, ms) => { const id = setTimeout(fn, ms); return () => clearTimeout(id); }) {
+    this.board = new MarkBoard(later, () => { if (!this.disposed && !this.syncing) this.refresh(); });
+  }
 
   readonly sink: ProgressSink = (path, e, src) => {
     if (this.disposed) return;
@@ -72,6 +84,7 @@ export class ProgressHub {
     if (e.kind === "failed" && src.runId !== undefined) this.lastFailed.set(path, { kind: src.kind, runId: src.runId });
     else if (e.kind === "step" || e.kind === "done") this.lastFailed.delete(path);
     if (src.kind === "research" && e.kind === "outline") this.recordOutline(path, e.outline, src);
+    this.markEnd(path, e, src);
     const note = noticeFor(path, e, src, { topic: baseName(path) });
     if (note) {
       const run = src.runId ?? path;
@@ -111,7 +124,6 @@ export class ProgressHub {
     if (this.disposed) return;
     this.pendingList = list.map((p) => ({ ...p }));
     this.pendingRun.clear();
-    for (const p of this.pendingList) this.showReady(p.path);
     for (const job of jobs) {
       const path = job.path;
       if (job.kind === "keypoint") this.display.set(path, parentOf(path));
@@ -225,7 +237,39 @@ export class ProgressHub {
     return items;
   }
 
-  dispose(): void { this.disposed = true; }
+  /** What clicking a path's icon does: open its review, or retry a failed run. */
+  activate(path: string): void {
+    if (this.disposed) return;
+    const m = this.board.get(path);
+    if (m?.state === "ready") void this.review(path);
+    else if (m?.state === "failed") this.retry(path);
+  }
+
+  /** Right-click menu entries for a folder or PDF, by its mark. */
+  menuFor(path: string): { label: string; run: () => void }[] {
+    if (this.disposed) return [];
+    const state = this.board.get(path)?.state;
+    if (state === "ready") return [{ label: "Review suggestions", run: () => { void this.review(path); } }];
+    if (state === "failed" && this.actions.retry) return [{ label: "Retry research", run: () => this.retry(path) }];
+    return [];
+  }
+
+  dispose(): void { this.disposed = true; this.board.dispose(); }
+
+  private retry(path: string): void {
+    const kind = this.failedKind.get(path);
+    if (kind) this.actions.retry?.(path, kind);
+  }
+
+  // Terminal events of a folder or PDF run set the done / failed mark; a cancel leaves no mark.
+  private markEnd(path: string, e: Progress, src: ProgressSource): void {
+    if (src.kind === "keypoint") return;
+    if (e.kind === "done") this.board.set(path, "done");
+    else if (e.kind === "failed") {
+      if (isNeutralMessage(e.error)) this.board.remove(path);
+      else { this.failedKind.set(path, src.kind); this.board.set(path, "failed", e.error); }
+    }
+  }
 
   private settleReview(entry: PendingReview, approved: SubfolderSuggestion[] | null): void {
     // Ignore a result for a review that was cancelled, dropped or replaced meanwhile.
@@ -272,10 +316,6 @@ export class ProgressHub {
     const entry: PendingReview = { path, outline };
     if (existing >= 0) this.pendingList[existing] = entry; else this.pendingList.push(entry);
     this.actions.persistPending(this.pending());
-    // One "ready" notice per run (per path when the event carries no run id).
-    const notify = src.runId !== undefined ? !this.noticed.has(`${src.runId}|outline`) : existing < 0;
-    if (src.runId !== undefined) this.noticed.add(`${src.runId}|outline`);
-    if (notify) this.showReady(path);
     // The outline run is over once a review is pending: ignore its trailing events and let the pending set
     // keep the spinner, so the approved run (new id) is accepted even when its first event is a failed.
     if (src.runId !== undefined) this.pendingRun.set(path, src.runId); else this.pendingRun.delete(path);
@@ -283,24 +323,38 @@ export class ProgressHub {
     this.tracker.clear(path);
   }
 
-  private showReady(path: string): void {
-    this.ui.notice(`Suggestions ready for ${baseName(path)}`, { action: { label: "Review", run: () => { void this.review(path); } } });
+  // Working and ready marks mirror the tracker and the pending reviews; done and failed stay until they expire or a new run starts.
+  private syncBoard(working: Set<string>, ready: string[]): void {
+    this.syncing = true;
+    try {
+      for (const p of working) this.board.set(p, "working");
+      for (const p of ready) if (!working.has(p)) this.board.set(p, "ready");
+      for (const m of this.board.marks()) {
+        if (m.state === "working" && !working.has(m.path)) this.board.remove(m.path);
+        else if (m.state === "ready" && !working.has(m.path) && !ready.includes(m.path)) this.board.remove(m.path);
+      }
+    } finally { this.syncing = false; }
   }
 
   private refresh(): void {
     const active = this.tracker.active();
     for (const p of [...this.display.keys()]) if (!active.includes(p)) this.display.delete(p);
-    const spinners = [...new Set([...active.map((p) => this.display.get(p) ?? p), ...this.pendingList.map((p) => p.path)])];
+    const spinners = [...new Set(active.map((p) => this.display.get(p) ?? p))];
+    this.syncBoard(new Set(spinners), this.pendingList.map((p) => p.path));
     let status = "";
     if (active.length > 0) {
       status = this.tracker.statusSuffix();
       if (active.length > 1) status += ` (+${active.length - 1} more)`;
-    } else if (this.pendingList.length > 0) {
-      status = `Suggestions ready (${this.pendingList.length})`;
     }
     if (spinners.length !== this.shownSpinners.length || spinners.some((p, i) => p !== this.shownSpinners[i])) {
       this.shownSpinners = spinners;
       this.ui.setSpinners([...spinners]);
+    }
+    const marks = this.board.marks().filter((m) => m.state !== "working");
+    const sig = JSON.stringify(marks);
+    if (sig !== this.shownMarks) {
+      this.shownMarks = sig;
+      this.ui.setMarks?.(marks.map((m) => ({ ...m })));
     }
     if (status !== this.shownStatus) {
       this.shownStatus = status;

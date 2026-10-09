@@ -18,6 +18,8 @@ import { KeypointFlow } from "./flows/keypointFlow";
 import { decideRename } from "./events";
 import { ProgressHub } from "./ui/hub";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
+import { ExplorerMarks } from "./ui/explorerMarks";
+import { fallbackStatus } from "./ui/marks";
 import { SuggestionModal } from "./ui/SuggestionModal";
 import { ConfirmModal } from "./ui/ConfirmModal";
 import { ICON_ID, ICON_SVG_INNER } from "./icon";
@@ -25,8 +27,6 @@ import { ribbonItems } from "./ui/ribbon";
 import type { MenuItem } from "./ui/ribbon";
 
 const ERROR_NOTICE_MS = 10000;
-// Long enough to reach the Review button.
-const ACTION_NOTICE_MS = 20000;
 
 function localDate(): string {
   const d = new Date();
@@ -107,25 +107,22 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     let queue: JobQueue;
 
     const spinner = new ExplorerSpinner(document);
+    // Status bar: the hub's progress text; when it has none, reviews the explorer could not show ("✦ 1 ready to review").
+    let hubStatus = "";
+    let unplacedReady = 0;
+    const showStatus = () => {
+      if (!this.statusTextEl) return;
+      const text = hubStatus || fallbackStatus(unplacedReady);
+      this.statusTextEl.setText(text);
+      this.statusTextEl.toggle(text !== "");
+    };
+    const marksUi = new ExplorerMarks(document, {
+      render: (el, icon) => setIcon(el, icon),
+      onActivate: (p) => { if (needReady()) hub.activate(p); },
+      onUnplaced: (paths) => { unplacedReady = paths.length; showStatus(); },
+    });
 
-    const showNotice = (text: string, opts?: { error?: boolean; action?: { label: string; run: () => void } }) => {
-      if (opts?.action) {
-        const action = opts.action;
-        const frag = document.createDocumentFragment();
-        const label = document.createElement("span");
-        label.textContent = `${text} `;
-        frag.appendChild(label);
-        const button = document.createElement("button");
-        button.textContent = action.label;
-        frag.appendChild(button);
-        const n = new Notice(frag, ACTION_NOTICE_MS);
-        button.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          n.hide();
-          try { action.run(); } catch (e) { fail(e); }
-        });
-        return;
-      }
+    const showNotice = (text: string, opts?: { error?: boolean }) => {
       if (opts?.error) new Notice(text, ERROR_NOTICE_MS);
       else new Notice(text);
     };
@@ -135,12 +132,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       {
         notice: showNotice,
         // The icon stays; only the text comes and goes.
-        setStatus: (text) => {
-          if (!this.statusTextEl) return;
-          this.statusTextEl.setText(text);
-          this.statusTextEl.toggle(text !== "");
-        },
+        setStatus: (text) => { hubStatus = text; showStatus(); },
         setSpinners: (paths) => spinner.set(paths),
+        setMarks: (marks) => marksUi.set(marks),
         reviewModal: (outline, hooks) => {
           const m = new SuggestionModal(this.app, outline, hooks);
           openModals.add(m);
@@ -155,6 +149,11 @@ export default class TopicResearchFoldersPlugin extends Plugin {
             ...(outline.subject ? { subject: outline.subject } : {}), ...(outline.codeLanguage ? { codeLanguage: outline.codeLanguage } : {}),
           }),
         resuggest: (path, topic) => researchFlow.resuggest(path, topic),
+        retry: (path, kind) => {
+          if (!needReady()) return;
+          if (kind === "pdf") pdfFlow.retry(path);
+          else guard(researchFlow.researchFolder(path, { force: true }));
+        },
         pathExists: (path) => vault.getAbstractFileByPath(path) != null,
         // The queue side of "Cancel all" (command and status bar menu); the hub clears its own state after it.
         cancelAllJobs: () => {
@@ -294,6 +293,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     this.statusTextEl.hide();
     // While jobs run or reviews wait, clicking offers Cancel all / Review; otherwise the full menu.
     this.registerDomEvent(this.statusEl, "click", (evt) => {
+      // The fallback text means reviews are waiting but not visible in the explorer: open one directly.
+      if (hubStatus === "" && unplacedReady > 0) { if (needReady()) guard(hub.review()); return; }
       const items = hub.menuItems();
       showMenu(items.length > 0 ? items : menuEntries(), evt);
     });
@@ -351,6 +352,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
+        // Review / Retry for the file or folder's current state.
+        for (const it of hub.menuFor(file.path)) menu.addItem((item) => item.setTitle(it.label).setIcon("sparkles").onClick(() => { try { it.run(); } catch (e) { fail(e); } }));
         if (!(file instanceof TFolder) || file.path === "/" || file.isRoot()) return;
         menu.addItem((item) =>
           item.setTitle("Research this folder").setIcon("search").onClick(() => { if (needReady()) guard(researchFlow.researchFolder(file.path, { force: true })); }));
@@ -365,15 +368,17 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       () => hub.dispose(),
       () => catalog.dispose(),
       () => spinner.stop(),
+      () => marksUi.stop(),
       () => { for (const m of [...openModals]) m.close(); },
     ];
 
     // Nothing is enqueued from vault events until the layout is ready (avoids startup create-event storms).
     // No modal opens at startup: restored reviews only get a notice with a Review button.
-    this.registerEvent(this.app.workspace.on("layout-change", () => spinner.reattach()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => { spinner.reattach(); marksUi.reattach(); }));
     this.app.workspace.onLayoutReady(() => {
       ready = true;
       spinner.reattach();
+      marksUi.reattach();
       researchFlow.markReady();
       pdfFlow.markReady();
       hub.restorePending(this.data.pendingReviews, resumed);

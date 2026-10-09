@@ -101,6 +101,11 @@ export class PdfFlow {
     return next;
   }
 
+  /** Runs the analysis again for a PDF whose last run failed (the user clicked its warning icon). */
+  retry(path: string): void {
+    this.deps.enqueue({ id: `pdf:${path}`, kind: "pdf", path, triggeredAt: (this.deps.now ?? Date.now)() });
+  }
+
   private async trigger(path: string, clean: string): Promise<void> {
     const { readBinary, settings, writer, rename, enqueue, confirm } = this.deps;
     let bytes: ArrayBuffer | null;

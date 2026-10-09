@@ -52,6 +52,7 @@ function world() {
   };
   const notices: { text: string; error: boolean; action?: { label: string; run: () => void } }[] = [];
   const spinners: string[][] = [];
+  const markLists: { path: string; state: string }[][] = [];
   const statuses: string[] = [];
   const reviews: { outline: Outline; resolve: (v: SubfolderSuggestion[] | null) => void }[] = [];
   const persisted: PendingReview[][] = [];
@@ -60,6 +61,7 @@ function world() {
     notice: (text, opts) => { notices.push({ text, error: !!opts?.error, action: opts?.action }); },
     setStatus: (t) => { statuses.push(t); },
     setSpinners: (p) => { spinners.push([...p]); },
+    setMarks: (m) => { markLists.push(m.map((x) => ({ ...x }))); },
     reviewModal: (outline) => new Promise((resolve) => { reviews.push({ outline, resolve }); }),
   };
   // eslint-disable-next-line prefer-const
@@ -103,6 +105,7 @@ function world() {
   return {
     v, hub, queue, flow, calls, notices, spinners, statuses, reviews, persisted, added, attempts, flowNotices,
     spin: () => (spinners.length ? spinners[spinners.length - 1] : []),
+    ready: () => (markLists.at(-1) ?? []).filter((m) => m.state === "ready").map((m) => m.path),
     status: () => (statuses.length ? statuses[statuses.length - 1] : ""),
     /** Runs a fresh research job for T until its outline is pending. */
     async outline() { await flow.researchFolder(T, { force: true }); await queue.idle(); },
@@ -119,13 +122,13 @@ test("outline -> hub pending + Review notice -> Create runs the approved job and
   expect([...w.v.files.keys()]).toEqual([]);
   expect(w.hub.pending()).toEqual([{ path: T, outline: { topic: T, summary: "sum", subfolders: [A, B, C] } }]);
   expect(w.persisted.at(-1)).toEqual(w.hub.pending());
-  expect(w.notices.map((n) => n.text)).toEqual(["Suggestions ready for T"]);
-  expect(w.notices[0].action?.label).toBe("Review");
-  expect(w.spin()).toEqual([T]);
-  expect(w.status()).toBe("Suggestions ready (1)");
+  expect(w.notices).toEqual([]);
+  expect(w.ready()).toEqual([T]);
+  expect(w.spin()).toEqual([]);
+  expect(w.status()).toBe("");
   expect(w.reviews).toHaveLength(0); // nothing opens by itself
 
-  w.notices[0].action!.run();
+  w.hub.activate(T);
   expect(w.reviews).toHaveLength(1);
   w.reviews[0].resolve([A, C]);
   await flush();
@@ -165,8 +168,8 @@ test("review modal closed (null) -> nothing enqueued, pending removed", async ()
 test("closing the suggestion modal cancels: no job, no writes, spinner cleared, neutral notice; a second review of the path does nothing", async () => {
   const w = world();
   await w.outline();
-  expect(w.spin()).toEqual([T]);
-  w.notices[0].action!.run();
+  expect(w.ready()).toEqual([T]);
+  w.hub.activate(T);
   w.reviews[0].resolve(null);
   await flush();
   await w.queue.idle();
@@ -181,15 +184,15 @@ test("closing the suggestion modal cancels: no job, no writes, spinner cleared, 
   expect(w.notices.filter((n) => n.error)).toEqual([]);
   expect(w.hub.pending()).toEqual([]);
   expect(w.persisted.at(-1)).toEqual([]);
-  // The old notice's Review button and the command both find nothing to review.
+  // The icon is gone and the command finds nothing to review.
   const before = w.notices.length;
-  w.notices[0].action!.run();
+  w.hub.activate(T);
   await w.hub.review(T);
   await flush();
   await w.queue.idle();
   expect(w.reviews).toHaveLength(1);
   expect(w.added).toEqual([]);
-  expect(w.notices.slice(before).map((n) => n.text)).toEqual(["No suggestions are waiting for review.", "No suggestions are waiting for review."]);
+  expect(w.notices.slice(before).map((n) => n.text)).toEqual(["No suggestions are waiting for review."]);
   expect(w.spin()).toEqual([]);
 });
 
@@ -219,14 +222,14 @@ test("re-running the folder while its review is open: the outdated modal's resul
   const p = w.hub.review(T);
   await w.outline(); // a second outline run for the same folder replaces the pending suggestions
   expect(w.calls.outline).toBe(2);
-  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
+  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(0);
   w.reviews[0].resolve([A]);
   await p;
   await w.queue.idle();
   expect(w.added).toEqual([]);
   expect(w.calls.notes).toEqual([]);
   expect(w.hub.pending()).toHaveLength(1);
-  expect(w.spin()).toEqual([T]);
+  expect(w.ready()).toEqual([T]);
   // Closing the new review cancels it.
   const q = w.hub.review(T);
   expect(w.reviews).toHaveLength(2);
@@ -260,7 +263,7 @@ test("closing an outdated modal while the re-run for the same folder is queued k
   // The queued re-run still ran and produced fresh suggestions.
   expect(w.calls.outline).toBe(2);
   expect(w.hub.pending()).toHaveLength(1);
-  expect(w.spin()).toEqual([T]);
+  expect(w.ready()).toEqual([T]);
 });
 
 test("closing an outdated modal while the re-run for the same folder is running: the re-run's suggestions still arrive", async () => {
@@ -282,8 +285,8 @@ test("closing an outdated modal while the re-run for the same folder is running:
   await w.queue.idle();
   expect(w.calls.outline).toBe(2);
   expect(w.hub.pending()).toHaveLength(1);
-  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
-  expect(w.spin()).toEqual([T]);
+  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(0);
+  expect(w.ready()).toEqual([T]);
 });
 
 // Fix round 1.
@@ -311,9 +314,9 @@ test("I1: Create while a newer run of the folder is running: no job is lost; the
   release();
   await w.queue.idle();
   expect(w.calls.outline).toBe(2);
-  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
+  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(0);
   expect(w.hub.pending()).toHaveLength(1);
-  expect(w.spin()).toEqual([T]);
+  expect(w.ready()).toEqual([T]);
   expect(w.calls.notes).toEqual([]);
 });
 
@@ -341,7 +344,7 @@ test("I1: Create while a newer run of the folder is only queued: same outcome", 
   await w.queue.idle();
   expect(w.calls.outline).toBe(2);
   expect(w.hub.pending()).toHaveLength(1);
-  expect(w.spin()).toEqual([T]);
+  expect(w.ready()).toEqual([T]);
   expect(w.calls.notes).toEqual([]);
 });
 
@@ -368,9 +371,9 @@ test("restart: a saved pending review is restored without a new outline request 
   await w.queue.idle();
   expect(w.calls.outline).toBe(0);
   expect(w.reviews).toHaveLength(0);
-  expect(w.notices.map((n) => n.text)).toEqual(["Suggestions ready for T"]);
-  expect(w.spin()).toEqual([T]);
-  w.notices[0].action!.run();
+  expect(w.notices).toEqual([]);
+  expect(w.ready()).toEqual([T]);
+  w.hub.activate(T);
   expect(w.reviews).toHaveLength(1);
   w.reviews[0].resolve([B]);
   await flush();
@@ -391,7 +394,7 @@ test("status after Create reads 'Researching T…' (never 'Resuming research…'
   w.reviews[0].resolve([A]);
   await p;
   await w.queue.idle();
-  const after = w.statuses.slice(w.statuses.indexOf("Suggestions ready (1)"));
+  const after = w.statuses.slice(0);
   expect(after).toContain("Researching T…");
   expect(w.statuses.some((s) => s.startsWith("Resuming"))).toBe(false);
   expect(w.status()).toBe("");
@@ -437,8 +440,8 @@ test("item 14 (1): restored pending review, then Cancel all: spinner cleared, pe
   const n = w.notices.length;
   await w.outline();
   expect(w.calls.outline).toBe(1);
-  expect(w.notices.slice(n).map((x) => x.text)).toEqual(["Suggestions ready for T"]);
-  expect(w.spin()).toEqual([T]);
+  expect(w.notices.slice(n).map((x) => x.text)).toEqual([]);
+  expect(w.ready()).toEqual([T]);
   const p = w.hub.review(T);
   w.reviews[0].resolve([A]);
   await p;
@@ -473,9 +476,8 @@ test("item 14 (2): restored research job (approved) cancelled mid-run: no stale 
   expect(w.v.files.has("T/T - Overview.md")).toBe(false);
   // A later trigger on the same path.
   await w.outline();
-  expect(w.notices.at(-1)!.text).toBe("Suggestions ready for T");
-  expect(w.spin()).toEqual([T]);
-  expect(w.status()).toBe("Suggestions ready (1)");
+  expect(w.ready()).toEqual([T]);
+  expect(w.status()).toBe("");
 });
 
 test("item 14 (3): a restored job whose run fails at once shows exactly one notice (flow failure, and flow failure + queue give-up)", async () => {
@@ -505,7 +507,7 @@ test("item 14 (4): a restored pending review still works after its folder was re
   w.v.folders.delete(T);
   w.v.folders.add("Renamed");
   w.hub.renamePending(T, "Renamed");
-  expect(w.spin()).toEqual(["Renamed"]);
+  expect(w.ready()).toEqual(["Renamed"]);
   expect(w.persisted.at(-1)!.map((x) => x.path)).toEqual(["Renamed"]);
   const p = w.hub.review();
   expect(w.reviews).toHaveLength(1);
