@@ -7,3 +7,10 @@ export interface PdfExtraction { summary: string; notes: ExtractedNote[]; }
 export type Job =
   | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[] }
   | { id: string; kind: "pdf"; path: string };
+export type Progress =
+  | { kind: "step"; text: string }
+  | { kind: "outline"; outline: Outline }
+  | { kind: "writing"; index: number; total: number; name: string }
+  | { kind: "itemDone"; name: string; ok: boolean; error?: string }
+  | { kind: "done"; folders: number; notes: number }
+  | { kind: "failed"; error: string };

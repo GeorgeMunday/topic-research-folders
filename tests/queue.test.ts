@@ -313,3 +313,49 @@ test("shutdown wakes a job sleeping between retries", async () => {
   expect(o.persisted.length).toBe(before);
   expect(o.failed).toEqual([]);
 });
+
+test("cancelJob removes a queued job and persists without it; returns true", async () => {
+  const o = opts({ maxConcurrent: 1 });
+  const ran: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const q = new JobQueue(async (j) => { ran.push(j.path); await gate; }, o);
+  q.add(pdfJob("a.pdf"));
+  q.add(pdfJob("b.pdf"));
+  await tick();
+  expect(q.cancelJob("pdf", "b.pdf")).toBe(true);
+  await tick();
+  expect(o.persisted[o.persisted.length - 1].map((j) => j.path)).toEqual(["a.pdf"]);
+  release();
+  await q.idle();
+  expect(ran).toEqual(["a.pdf"]);
+});
+
+test("cancelJob flags a running job, wakes a sleeping retry, and the job is not retried or persisted", async () => {
+  const o = opts({ maxConcurrent: 2 });
+  o.sleep = () => new Promise<void>(() => {}); // never resolves
+  let runs = 0;
+  const seen: boolean[] = [];
+  const q = new JobQueue(async (j, signal) => {
+    if (j.path === "a.pdf") { runs++; seen.push(signal.cancelled); throw new ApiError("slow", 429); }
+    await tick();
+  }, o);
+  q.add(pdfJob("a.pdf"));
+  await tick();
+  expect(q.cancelJob("pdf", "a.pdf")).toBe(true);
+  await q.idle();
+  expect(runs).toBe(1);
+  expect(o.failed).toHaveLength(0);
+  expect(o.persisted[o.persisted.length - 1]).toEqual([]);
+  expect(q.cancelJob("pdf", "a.pdf")).toBe(false);
+});
+
+test("cancelJob returns false for an unknown job", async () => {
+  const q = new JobQueue(async () => {}, opts());
+  expect(q.cancelJob("pdf", "nope.pdf")).toBe(false);
+  q.add(pdfJob("a.pdf"));
+  expect(q.cancelJob("research", "a.pdf")).toBe(false); // different kind
+  await q.idle();
+  q.shutdown();
+  expect(q.cancelJob("pdf", "a.pdf")).toBe(false);
+});

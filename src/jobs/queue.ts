@@ -75,6 +75,27 @@ export class JobQueue {
     this.checkIdle();
   }
 
+  cancelJob(kind: Job["kind"], path: string): boolean {
+    if (this.stopped) return false;
+    const k = `${kind}\u0000${path}`;
+    const qi = this.queue.findIndex((j) => keyOf(j) === k);
+    if (qi >= 0) {
+      this.queue.splice(qi, 1);
+      this.changed();
+      this.checkIdle();
+      return true;
+    }
+    for (const a of this.running) {
+      if (!a.signal.cancelled && keyOf(a.job) === k) {
+        a.signal.cancelled = true;
+        a.wake?.();
+        this.changed();
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Stop without persisting, so the last saved snapshot stays as the resume list. */
   shutdown(): void {
     this.stopped = true;
