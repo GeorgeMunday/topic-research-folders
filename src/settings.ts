@@ -129,6 +129,8 @@ function validModelCache(raw: unknown): ModelCache | null {
       display_name: typeof m.display_name === "string" ? m.display_name : m.id,
       lifecycle: m.lifecycle,
       created_at: typeof m.created_at === "string" ? m.created_at : "",
+      ...(typeof m.pdf === "boolean" ? { pdf: m.pdf } : {}),
+      ...(typeof m.webSearch === "boolean" ? { webSearch: m.webSearch } : {}),
     });
   }
   return { fetchedAt: raw.fetchedAt, models };
@@ -179,6 +181,7 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   private unsubscribe: (() => void) | null = null;
+  private rerenderModels: () => void = () => {};
 
   hide(): void {
     this.unsubscribe?.();
@@ -211,14 +214,17 @@ export class SettingsTab extends PluginSettingTab {
       const state = catalog.state();
       if (!s.modelChosen && state.status === "ready") {
         // Automatic selection: saved without marking the model as chosen.
-        const sel = modelOptions(state.models, s.model, false).selected;
+        const sel = modelOptions(state.models, s.model, false, { useWebSearch: s.useWebSearch }).selected;
         if (sel && sel !== s.model) { s.model = sel; save(); }
       }
-      const v = pickerView(state, s.model, s.modelChosen);
+      const v = pickerView(state, s.model, s.modelChosen, { useWebSearch: s.useWebSearch });
       if (select) {
         const sel: HTMLSelectElement = select;
         sel.empty();
-        for (const o of v.options) sel.createEl("option", { value: o.value, text: o.label });
+        for (const o of v.options) {
+          const opt = sel.createEl("option", { value: o.value, text: o.label });
+          if (o.disabled) opt.disabled = true;
+        }
         sel.value = v.selected;
       }
       setDisabled(v.disabled);
@@ -228,6 +234,7 @@ export class SettingsTab extends PluginSettingTab {
       warnEl.setText(v.warning ?? "");
     };
     this.unsubscribe = catalog.subscribe(render);
+    this.rerenderModels = render;
     render();
     catalog.ensure();
   }
@@ -252,7 +259,7 @@ export class SettingsTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Use web search")
       .setDesc("Let Claude search the web while researching.")
-      .addToggle((t) => t.setValue(s.useWebSearch).onChange((v) => { s.useWebSearch = v; save(); }));
+      .addToggle((t) => t.setValue(s.useWebSearch).onChange((v) => { s.useWebSearch = v; save(); this.rerenderModels(); }));
 
     const suffix = new Setting(containerEl)
       .setName("Trigger suffix")

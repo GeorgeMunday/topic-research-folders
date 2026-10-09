@@ -448,3 +448,68 @@ describe("pickerView", () => {
     expect(errNot.options.some((o) => o.label.includes("unavailable"))).toBe(false);
   });
 });
+
+describe("model capabilities", () => {
+  const caps = (pdf: boolean | null, web: boolean | null) => ({
+    capabilities: {
+      pdf_input: pdf === null ? null : { supported: pdf },
+      server_tools: web === null ? null : { web_search: { supported: web } },
+    },
+  });
+
+  test("parseModelsPage reads pdf and web search support only when explicitly stated", () => {
+    const r = parseModelsPage({ data: [
+      { id: "a", ...caps(false, false) },
+      { id: "b", ...caps(true, true) },
+      { id: "c", capabilities: null },
+      { id: "d" },
+      { id: "e", capabilities: { pdf_input: { supported: "no" } } },
+    ] });
+    const by = Object.fromEntries(r.models.map((x) => [x.id, x]));
+    expect(by.a.pdf).toBe(false);
+    expect(by.a.webSearch).toBe(false);
+    expect(by.b.pdf).toBe(true);
+    expect(by.b.webSearch).toBe(true);
+    for (const id of ["c", "d", "e"]) { expect(by[id].pdf).toBeUndefined(); expect(by[id].webSearch).toBeUndefined(); }
+  });
+
+  test("modelOptions disables a model without PDF support and labels it", () => {
+    const r = modelOptions([m("a", { display_name: "A", pdf: false }), m("b", { display_name: "B" })], "b", true, { useWebSearch: false });
+    expect(r.options).toEqual([
+      { value: "a", label: "A (no PDF support)", disabled: true },
+      { value: "b", label: "B" },
+    ]);
+  });
+
+  test("modelOptions disables a model without web search only while web search is on", () => {
+    const list = [m("a", { display_name: "A", webSearch: false })];
+    const on = modelOptions(list, "a", true, { useWebSearch: true });
+    expect(on.options).toEqual([{ value: "a", label: "A (no web search)", disabled: true }]);
+    const off = modelOptions(list, "a", true, { useWebSearch: false });
+    expect(off.options).toEqual([{ value: "a", label: "A" }]);
+  });
+
+  test("modelOptions: unknown capabilities (undefined) are shown normally", () => {
+    const r = modelOptions([m("a", { display_name: "A" })], "a", true, { useWebSearch: true });
+    expect(r.options).toEqual([{ value: "a", label: "A" }]);
+  });
+
+  test("modelOptions: both missing -> both reasons in the label", () => {
+    const r = modelOptions([m("a", { display_name: "A", pdf: false, webSearch: false })], "a", true, { useWebSearch: true });
+    expect(r.options[0]).toEqual({ value: "a", label: "A (no PDF support, no web search)", disabled: true });
+  });
+
+  test("automatic selection skips disabled models", () => {
+    const r = modelOptions([
+      m("claude-sonnet-5-5", { pdf: false }),
+      m("other", { created_at: "2020-01-01T00:00:00Z" }),
+    ], "", false, { useWebSearch: false });
+    expect(r.selected).toBe("other");
+  });
+
+  test("pickerView passes useWebSearch through", () => {
+    const state = { status: "ready" as const, models: [m("a", { display_name: "A", webSearch: false })] };
+    expect(pickerView(state, "a", true, { useWebSearch: true }).options[0].disabled).toBe(true);
+    expect(pickerView(state, "a", true, { useWebSearch: false }).options[0].disabled).toBeUndefined();
+  });
+});

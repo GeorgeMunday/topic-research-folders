@@ -1,7 +1,9 @@
 import { ApiError } from "./jobs/queue";
 import type { GetFn } from "./research/httpAdapter";
 
-export interface ModelInfo { id: string; display_name: string; lifecycle: "active" | "deprecated" | "retired"; created_at: string; }
+export interface ModelInfo { id: string; display_name: string; lifecycle: "active" | "deprecated" | "retired"; created_at: string;
+  /** From the Models API `capabilities`; undefined when the API does not say. */
+  pdf?: boolean; webSearch?: boolean; }
 export interface ModelCache { fetchedAt: string; models: ModelInfo[]; }
 
 export const MAX_PAGES = 10;
@@ -15,6 +17,16 @@ const LIFECYCLES = ["active", "deprecated", "retired"] as const;
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** Only an explicit boolean counts; null or missing capabilities mean "unknown". */
+export function capabilityFlags(caps: unknown): { pdf?: boolean; webSearch?: boolean } {
+  const out: { pdf?: boolean; webSearch?: boolean } = {};
+  if (!isObj(caps)) return out;
+  if (isObj(caps.pdf_input) && typeof caps.pdf_input.supported === "boolean") out.pdf = caps.pdf_input.supported;
+  const tools = caps.server_tools;
+  if (isObj(tools) && isObj(tools.web_search) && typeof tools.web_search.supported === "boolean") out.webSearch = tools.web_search.supported;
+  return out;
+}
+
 export function parseModelsPage(json: unknown): { models: ModelInfo[]; hasMore: boolean; lastId: string | null } {
   if (!isObj(json)) return { models: [], hasMore: false, lastId: null };
   const models: ModelInfo[] = [];
@@ -27,6 +39,7 @@ export function parseModelsPage(json: unknown): { models: ModelInfo[]; hasMore: 
         display_name: typeof it.display_name === "string" && it.display_name ? it.display_name : it.id,
         lifecycle: lc,
         created_at: typeof it.created_at === "string" ? it.created_at : "",
+        ...capabilityFlags(it.capabilities),
       });
     }
   }
@@ -70,14 +83,30 @@ export function sortModels(models: ModelInfo[]): ModelInfo[] {
   });
 }
 
-export function modelOptions(models: ModelInfo[], savedId: string, chosen: boolean):
-  { options: { value: string; label: string }[]; selected: string; warning?: string } {
+export interface ModelOption { value: string; label: string; disabled?: true }
+export interface ModelOptionsOpts { useWebSearch?: boolean }
+
+/** Reasons the plugin cannot use a model; only explicit `false` from the API counts. */
+function missing(m: ModelInfo, opts: ModelOptionsOpts): string[] {
+  const r: string[] = [];
+  if (m.pdf === false) r.push("no PDF support");
+  if (m.webSearch === false && opts.useWebSearch) r.push("no web search");
+  return r;
+}
+
+export function modelOptions(models: ModelInfo[], savedId: string, chosen: boolean, opts: ModelOptionsOpts = {}):
+  { options: ModelOption[]; selected: string; warning?: string } {
   const usable = sortModels(models.filter((m) => m.lifecycle !== "retired"));
-  const options = usable.map((m) => ({ value: m.id, label: m.lifecycle === "deprecated" ? `${m.display_name} (deprecated)` : m.display_name }));
+  const options: ModelOption[] = usable.map((m) => {
+    const why = missing(m, opts);
+    const label = m.lifecycle === "deprecated" ? `${m.display_name} (deprecated)` : m.display_name;
+    return why.length ? { value: m.id, label: `${label} (${why.join(", ")})`, disabled: true as const } : { value: m.id, label };
+  });
+  const enabled = usable.filter((m) => missing(m, opts).length === 0);
   const savedActive = usable.some((m) => m.id === savedId && m.lifecycle === "active");
   if (savedId === "" || (!chosen && !savedActive)) {
-    const firstActive = usable.find((m) => m.lifecycle === "active");
-    const pick = usable.find((m) => m.id === DEFAULT_MODEL) ?? firstActive ?? usable[0];
+    const firstActive = enabled.find((m) => m.lifecycle === "active");
+    const pick = enabled.find((m) => m.id === DEFAULT_MODEL) ?? firstActive ?? enabled[0] ?? usable[0];
     return { options, selected: pick ? pick.id : "" };
   }
   if (usable.some((m) => m.id === savedId)) return { options, selected: savedId };
@@ -192,13 +221,13 @@ export class ModelCatalog {
 }
 
 export interface PickerView {
-  disabled: boolean; spinning: boolean; options: { value: string; label: string }[];
+  disabled: boolean; spinning: boolean; options: ModelOption[];
   selected: string; hint?: string; error?: string; warning?: string;
 }
 
-export function pickerView(state: CatalogState, savedId: string, chosen: boolean): PickerView {
+export function pickerView(state: CatalogState, savedId: string, chosen: boolean, opts: ModelOptionsOpts = {}): PickerView {
   const justSaved = savedId ? [{ value: savedId, label: savedId }] : [];
-  const fromModels = (): ReturnType<typeof modelOptions> => modelOptions(state.models, savedId, chosen);
+  const fromModels = (): ReturnType<typeof modelOptions> => modelOptions(state.models, savedId, chosen, opts);
   if (state.status === "nokey") {
     return { disabled: true, spinning: false, options: justSaved, selected: savedId, hint: "Add your API key to load models" };
   }

@@ -212,3 +212,16 @@ test("keypoint jobs keep a string docSummary; a wrong-typed one drops the job; a
   expect(mergeData({ jobs: [withSummary, { ...base, id: "k2", path: "R/C.md", docSummary: 5 }, { ...base, id: "k3", path: "R/D.md" }] }).jobs)
     .toEqual([withSummary, { ...base, id: "k3", path: "R/D.md" }]);
 });
+
+describe("mergeData model capabilities", () => {
+  test("cached capability flags are kept when booleans and dropped otherwise", () => {
+    const mk = (extra: object) => ({ id: "a", display_name: "A", lifecycle: "active", created_at: "", ...extra });
+    const cache = (models: object[]) => mergeData({ modelCache: { fetchedAt: "2026-01-01T00:00:00Z", models } }).modelCache!.models;
+    expect(cache([mk({ pdf: false, webSearch: true })])[0]).toMatchObject({ pdf: false, webSearch: true });
+    const odd = cache([mk({ pdf: "no", webSearch: null })])[0];
+    expect(odd.pdf).toBeUndefined();
+    expect(odd.webSearch).toBeUndefined();
+    const old = cache([mk({})])[0];
+    expect("pdf" in old).toBe(false);
+  });
+});
