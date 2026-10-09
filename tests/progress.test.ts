@@ -1,5 +1,5 @@
 import { test, expect, describe } from "vitest";
-import { ProgressTracker, CANCELLED_MESSAGE, ALREADY_RESEARCHED_MESSAGE, isNeutralMessage, noticeFor, RunGate, nextRunId, shouldOpenSession } from "../src/progress";
+import { ProgressTracker, CANCELLED_MESSAGE, ALREADY_RESEARCHED_MESSAGE, isNeutralMessage, noticeFor, RunGate, nextRunId } from "../src/progress";
 
 const src = { kind: "research" as const, resumed: false };
 
@@ -178,12 +178,6 @@ describe("run id uniqueness", () => {
 });
 
 describe("final-fix helpers", () => {
-  test("shouldOpenSession: only for a fresh, non-restored step with no session", () => {
-    expect(shouldOpenSession({ resumed: false, restored: false, hasSession: false })).toBe(true);
-    expect(shouldOpenSession({ resumed: true, restored: false, hasSession: false })).toBe(false);
-    expect(shouldOpenSession({ resumed: false, restored: true, hasSession: false })).toBe(false);
-    expect(shouldOpenSession({ resumed: false, restored: false, hasSession: true })).toBe(false);
-  });
   test("RunGate.live is true only while the current run has not ended", () => {
     const g = new RunGate();
     const src = { kind: "research" as const, resumed: false, runId: 5 };
