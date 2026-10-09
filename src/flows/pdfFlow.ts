@@ -1,10 +1,11 @@
-import type { ExtractedNote, Job, PdfExtraction } from "../types";
+import type { ExtractedNote, Job, PdfExtraction, Progress } from "../types";
 import type { Settings } from "../settings";
 import type { ResearchClient } from "../research/claudeClient";
 import type { VaultWriter } from "../vault/writer";
 import type { Runner } from "../jobs/queue";
 import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
+import { CANCELLED_MESSAGE, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
 
 export interface Confirmer { confirm(message: string): Promise<boolean>; }
@@ -21,6 +22,7 @@ export interface PdfDeps {
   markProcessed: (hash: string, path: string) => Promise<void>;
   forget: (hash: string) => Promise<void>;
   setTimer: (fn: () => void, ms: number) => void;
+  progress?: ProgressSink;
 }
 
 interface Entry { path: string; hash: string; pageCount: number; error?: "encrypted" | "unreadable"; }
@@ -185,17 +187,23 @@ export class PdfFlow {
     const hash = await sha256(bytes);
     if (processed()[hash] || this.inFlight.has(hash)) return;
     this.inFlight.add(hash);
+    const src = { kind: "pdf" as const, resumed: false };
+    const emit = (e: Progress) => this.deps.progress?.(job.path, e, src);
+    const fail = (error: string) => emit({ kind: "failed", error });
     // Cached chunk results survive only a retryable failure; every other exit clears them.
     let keep = false;
     try {
       const file = baseName(job.path);
+      emit({ kind: "step", text: `Preparing ${file}…` });
       const client = this.deps.client();
       if (!client || !settings().apiKey.trim()) {
-        notify.error("Add your Claude API key in the plugin settings before analysing PDFs.");
+        const msg = "Add your Claude API key in the plugin settings before analysing PDFs.";
+        notify.error(msg);
+        fail(msg);
         return;
       }
       const root = await writer.findResearchRoot(job.path);
-      if (!root) return;
+      if (!root) { fail("Not inside a research folder"); return; }
       const subfolders = writer.listSubfolders(root.root).filter((n) => !RESERVED.has(n.toLowerCase()));
 
       let split: Awaited<ReturnType<typeof splitPdf>>;
@@ -203,38 +211,52 @@ export class PdfFlow {
         split = await splitPdf(bytes, settings().pdfPagesPerChunk, MAX_CHUNK_BYTES);
       } catch (e) {
         if (e instanceof PdfError) {
-          notify.error(`Could not analyse ${file}: the PDF is ${e.reason}.`);
+          const msg = `Could not analyse ${file}: the PDF is ${e.reason}.`;
+          notify.error(msg);
+          fail(msg);
           return;
         }
+        fail(e instanceof Error ? e.message : String(e));
         throw e;
       }
       if (split.skippedPages.length > 0) {
         notify.error(`${file}: skipped page${split.skippedPages.length === 1 ? "" : "s"} ${split.skippedPages.join(", ")} (too large to send).`);
       }
-      if (split.chunks.length === 0) return;
+      if (split.chunks.length === 0) { fail("No pages to send"); return; }
 
       let done = this.chunkCache.get(hash);
       if (!done) { done = new Map(); this.chunkCache.set(hash, done); }
       this.cacheHashByPath.set(job.path, hash);
       const results: PdfExtraction[] = [];
       for (const [i, chunk] of split.chunks.entries()) {
-        if (signal.cancelled) { keep = false; return; }
+        if (signal.cancelled) { keep = false; fail(CANCELLED_MESSAGE); return; }
         const cached = done.get(i);
         if (cached) { results.push(cached); continue; }
+        emit({ kind: "step", text: `Analysing ${file} (chunk ${i + 1}/${split.chunks.length})…` });
         try {
           const r = await client.extractPdf(root.topic, subfolders, chunk.base64, chunk.firstPage - 1);
           done.set(i, r);
           results.push(r);
         } catch (e) {
-          if (isRetryable(e)) { keep = true; throw e; }
-          notify.error(`Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`);
+          if (isRetryable(e)) { keep = true; emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); throw e; }
+          const msg = `Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`;
+          notify.error(msg);
+          fail(msg);
           return;
         }
       }
-      if (signal.cancelled) return;
+      if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
       const merged = mergeExtractions(results);
-      await writer.writeExtracted(root.root, root.topic, file, merged, today());
-      await markProcessed(hash, job.path);
+      let written: Awaited<ReturnType<typeof writer.writeExtracted>>;
+      try {
+        written = await writer.writeExtracted(root.root, root.topic, file, merged, today());
+        await markProcessed(hash, job.path);
+      } catch (e) {
+        if (isRetryable(e)) emit({ kind: "step", text: `Retrying ${file} after a temporary error…` });
+        else fail(e instanceof Error ? e.message : String(e));
+        throw e;
+      }
+      emit({ kind: "done", folders: new Set(written.map((w) => w.folder)).size, notes: written.length });
       notify.info(`Extracted ${merged.notes.length} notes from ${file}`);
     } finally {
       this.inFlight.delete(hash);

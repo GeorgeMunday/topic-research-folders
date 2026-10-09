@@ -1,9 +1,11 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ResearchFlow, type ResearchDeps } from "../src/flows/researchFlow";
 import { VaultWriter, type VaultLike } from "../src/vault/writer";
 import { JobQueue, ApiError } from "../src/jobs/queue";
 import type { Job, Outline, SubfolderSuggestion, NoteContent } from "../src/types";
 import type { Settings } from "../src/settings";
+import type { Progress } from "../src/types";
+import { CANCELLED_MESSAGE, OUTLINE_STAGE_MS, type ProgressSource } from "../src/progress";
 
 class MemVault implements VaultLike {
   files = new Map<string, string>();
@@ -45,7 +47,7 @@ const baseSettings: Settings = {
 function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggestion[] | null; pdfs?: string[]; keyless?: boolean } = {}) {
   const v = new MemVault();
   const writer = new VaultWriter(v);
-  const calls = { outline: [] as any[], notes: [] as any[], approve: 0 };
+  const calls = { outline: [] as any[], notes: [] as any[], approve: 0, approvePaths: [] as string[] };
   const infos: string[] = [], errors: string[] = [], renames: [string, string][] = [], enqueued: Job[] = [], queuedPdfs: string[][] = [];
   const failNotes = new Map<string, Error>();
   const settings = { ...baseSettings, ...over.settings };
@@ -65,7 +67,7 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
   const deps: ResearchDeps = {
     client: () => (over.keyless ? null : client),
     writer,
-    approver: { async approve(o) { calls.approve++; return over.approve === undefined ? o.subfolders.slice(0, 2) : over.approve; } },
+    approver: { async approve(o, jobPath) { calls.approve++; calls.approvePaths.push(jobPath); return over.approve === undefined ? o.subfolders.slice(0, 2) : over.approve; } },
     notify: { info: (m) => infos.push(m), error: (m) => errors.push(m) },
     rename: async (from, to) => {
       renames.push([from, to]);
@@ -378,5 +380,223 @@ describe("run", () => {
     expect(s.v.files.has("T/A/A note.md")).toBe(true);
     expect(s.v.files.has("T/B/B note.md")).toBe(true);
     expect(s.v.folders.has("T/A (2)")).toBe(false);
+  });
+});
+
+describe("progress events", () => {
+  type Ev = [string, Progress, ProgressSource];
+  function withSink(over: Parameters<typeof setup>[0] = {}) {
+    const s = setup(over);
+    const events: Ev[] = [];
+    s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
+    const kinds = () => events.map((x) => x[1]);
+    const timers: { fn: () => void; ms: number; cancel: ReturnType<typeof vi.fn> }[] = [];
+    return { ...s, events, kinds, timers };
+  }
+  const withLater = (s: ReturnType<typeof withSink>) => {
+    s.deps.later = (fn, ms) => { const cancel = vi.fn(); s.timers.push({ fn, ms, cancel }); return cancel; };
+  };
+
+  test("successful run emits step, step, outline, writing/itemDone per subfolder, then done with folder and note counts", async () => {
+    const s = withSink({ settings: { useWebSearch: true }, approve: [A, C] });
+    withLater(s);
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    const k = s.kinds();
+    expect(k[0]).toEqual({ kind: "step", text: "Searching the web…" });
+    expect(k.find((e) => e.kind === "outline")).toMatchObject({ kind: "outline", outline: { topic: "T" } });
+    const rest = k.filter((e) => e.kind === "writing" || e.kind === "itemDone" || e.kind === "done");
+    expect(rest).toEqual([
+      { kind: "writing", index: 1, total: 2, name: "A" }, { kind: "itemDone", name: "A", ok: true },
+      { kind: "writing", index: 2, total: 2, name: "C" }, { kind: "itemDone", name: "C", ok: true },
+      { kind: "done", folders: 2, notes: 2 },
+    ]);
+    expect(s.events.every((e) => e[0] === "T" && e[2].kind === "research" && e[2].resumed === false)).toBe(true);
+    expect(s.infos).toEqual([]);
+    expect(s.errors).toEqual([]);
+  });
+
+  test("the second step only fires if the outline is still pending, and its timer is cancelled when the outline arrives", async () => {
+    const s = withSink({ settings: { useWebSearch: true } });
+    withLater(s);
+    s.v.folders.add("T");
+    const orig = s.deps.client()!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    s.deps.client = () => ({ ...orig, outline: async (...a: Parameters<typeof orig.outline>) => { await gate; return orig.outline(...a); } });
+    const p = s.run(rjob("T"));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(s.timers).toHaveLength(1);
+    expect(s.timers[0].ms).toBe(OUTLINE_STAGE_MS);
+    expect(s.timers[0].cancel).not.toHaveBeenCalled();
+    s.timers[0].fn();
+    expect(s.kinds().slice(0, 2)).toEqual([{ kind: "step", text: "Searching the web…" }, { kind: "step", text: "Suggesting folders…" }]);
+    release();
+    await p;
+    expect(s.timers[0].cancel).toHaveBeenCalledTimes(1);
+
+    // outline arrives immediately: the timer is cancelled and never fired, so no second step
+    const t = withSink({ settings: { useWebSearch: true } });
+    withLater(t);
+    t.v.folders.add("T");
+    await t.run(rjob("T"));
+    expect(t.timers[0].cancel).toHaveBeenCalledTimes(1);
+    expect(t.kinds().filter((e) => e.kind === "step")).toEqual([{ kind: "step", text: "Searching the web…" }]);
+  });
+
+  test("web search off: first step is 'Suggesting folders…' and later() is not used", async () => {
+    const s = withSink({ settings: { useWebSearch: false } });
+    withLater(s);
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    expect(s.kinds()[0]).toEqual({ kind: "step", text: "Suggesting folders…" });
+    expect(s.timers).toEqual([]);
+  });
+
+  test("failed outline (non-retryable) emits failed with the message and does not throw or notify", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    const orig = s.deps.client()!;
+    s.deps.client = () => ({ ...orig, outline: async () => { throw new ApiError("bad request", 400); } });
+    await expect(s.run(rjob("T"))).resolves.toBeUndefined();
+    expect(s.kinds().at(-1)).toMatchObject({ kind: "failed", error: expect.stringContaining("bad request") });
+    expect(s.kinds().filter((e) => e.kind === "failed" || e.kind === "done")).toHaveLength(1);
+    expect(s.errors).toEqual([]);
+    expect(s.infos).toEqual([]);
+  });
+
+  test("retryable outline error emits the retry step and rethrows", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    const orig = s.deps.client()!;
+    s.deps.client = () => ({ ...orig, outline: async () => { throw new ApiError("overloaded", 503); } });
+    await expect(s.run(rjob("T"))).rejects.toBeInstanceOf(ApiError);
+    expect(s.kinds().at(-1)).toEqual({ kind: "step", text: "Retrying after a temporary error…" });
+    expect(s.kinds().some((e) => e.kind === "failed" || e.kind === "done")).toBe(false);
+  });
+
+  test("one failing subfolder emits itemDone ok:false with the reason, the rest continue, done counts only successes", async () => {
+    const s = withSink({ approve: [A, B, C] });
+    s.v.folders.add("T");
+    s.failNotes.set("B", new Error("bad"));
+    await s.run(rjob("T"));
+    const k = s.kinds();
+    expect(k).toContainEqual({ kind: "itemDone", name: "B", ok: false, error: "bad" });
+    expect(k).toContainEqual({ kind: "itemDone", name: "C", ok: true });
+    expect(k.at(-1)).toEqual({ kind: "done", folders: 2, notes: 2 });
+  });
+
+  test("approval cancelled emits failed CANCELLED_MESSAGE", async () => {
+    const s = withSink({ approve: null });
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+    expect(s.calls.notes).toEqual([]);
+  });
+
+  test("cancel after the outline returns (user pressed Cancel) writes nothing and emits failed CANCELLED_MESSAGE", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    const sig = { cancelled: false };
+    const orig = s.deps.client()!;
+    s.deps.client = () => ({ ...orig, outline: async (...a: Parameters<typeof orig.outline>) => { const r = await orig.outline(...a); sig.cancelled = true; return r; } });
+    await s.flow.run(rjob("T"), sig, async () => {});
+    expect(s.calls.approve).toBe(0);
+    expect(s.calls.notes).toEqual([]);
+    expect(s.v.files.size).toBe(0);
+    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+
+    // and cancelled while the approver was open
+    const t = withSink();
+    t.v.folders.add("T");
+    const sig2 = { cancelled: false };
+    t.deps.approver = { async approve(o) { sig2.cancelled = true; return o.subfolders; } };
+    await t.flow.run(rjob("T"), sig2, async () => {});
+    expect(t.calls.notes).toEqual([]);
+    expect(t.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+  });
+
+  test("cancel mid-way stops at the next subfolder and emits failed CANCELLED_MESSAGE", async () => {
+    const s = withSink({ approve: [A, B, C] });
+    s.v.folders.add("T");
+    const signal = { cancelled: false };
+    const orig = s.deps.writer.writeSubfolder.bind(s.deps.writer);
+    s.deps.writer.writeSubfolder = async (...a: Parameters<typeof orig>) => { const r = await orig(...a); signal.cancelled = true; return r; };
+    await s.flow.run(rjob("T"), signal, async () => {});
+    expect(s.calls.notes.map((c) => c[2])).toEqual(["A"]);
+    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+    expect(s.kinds().filter((e) => e.kind === "failed" || e.kind === "done")).toHaveLength(1);
+  });
+
+  test("cancel before the overview emits failed CANCELLED_MESSAGE", async () => {
+    const s = withSink({ approve: [A] });
+    s.v.folders.add("T");
+    const signal = { cancelled: false };
+    const orig = s.deps.writer.writeSubfolder.bind(s.deps.writer);
+    s.deps.writer.writeSubfolder = async (...a: Parameters<typeof orig>) => { const r = await orig(...a); signal.cancelled = true; return r; };
+    await s.flow.run(rjob("T"), signal, async () => {});
+    expect(s.v.files.has("T/T - Overview.md")).toBe(false);
+    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+  });
+
+  test("resumed research job emits no step that opens a modal: source.resumed true, first event 'Resuming research…'", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    await s.run(rjob("T", { approved: [A, B, C], done: ["A"] }));
+    expect(s.events[0][1]).toEqual({ kind: "step", text: "Resuming research…" });
+    expect(s.events.every((e) => e[2].resumed === true)).toBe(true);
+    expect(s.kinds().some((e) => e.kind === "outline")).toBe(false);
+    expect(s.kinds().slice(1)).toEqual([
+      { kind: "writing", index: 2, total: 3, name: "B" }, { kind: "itemDone", name: "B", ok: true },
+      { kind: "writing", index: 3, total: 3, name: "C" }, { kind: "itemDone", name: "C", ok: true },
+      { kind: "done", folders: 3, notes: 2 },
+    ]);
+  });
+
+  test("pre-start exits emit only a terminal failed with the notice text", async () => {
+    const a = withSink({ keyless: true });
+    await a.run(rjob("T"));
+    expect(a.kinds()).toEqual([{ kind: "failed", error: "Add your Claude API key in the plugin settings before researching a topic." }]);
+    expect(a.errors).toEqual([]);
+
+    const b = withSink();
+    b.v.folders.add("T");
+    b.v.files.set("T/T - Overview.md", ROOT_MARK);
+    await b.run(rjob("T"));
+    expect(b.kinds()).toEqual([{ kind: "failed", error: "\"T\" is already researched." }]);
+    expect(b.infos).toEqual([]);
+
+    const c = withSink({ settings: { maxDepth: 1 } });
+    c.v.folders.add("R");
+    c.v.files.set("R/R - Overview.md", ROOT_MARK);
+    c.v.folders.add("R/X");
+    await c.run(rjob("R/X"));
+    expect(c.kinds()).toHaveLength(1);
+    expect(c.kinds()[0]).toMatchObject({ kind: "failed", error: expect.stringContaining("nesting would be 2 levels deep") });
+    expect(c.errors).toEqual([]);
+  });
+
+  test("approver receives the job path as its second argument", async () => {
+    const s = setup();
+    s.v.folders.add("Black holes");
+    await s.run(rjob("Black holes"));
+    expect(s.calls.approvePaths).toEqual(["Black holes"]);
+  });
+
+  test("without a sink the flow still notifies as before", async () => {
+    const s = setup({ approve: [A] });
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    expect(s.infos.some((m) => m.includes("Researched T"))).toBe(true);
+
+    const k = setup({ keyless: true });
+    await k.run(rjob("T"));
+    expect(k.errors).toHaveLength(1);
+
+    const e = setup();
+    e.v.folders.add("T");
+    const orig = e.deps.client()!;
+    e.deps.client = () => ({ ...orig, outline: async () => { throw new ApiError("bad request", 400); } });
+    await expect(e.run(rjob("T"))).rejects.toBeInstanceOf(ApiError);
   });
 });

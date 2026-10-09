@@ -6,6 +6,8 @@ import { ApiError, JobQueue } from "../src/jobs/queue";
 import { sha256 } from "../src/pdf/chunk";
 import type { Job, PdfExtraction, ExtractedNote } from "../src/types";
 import type { Settings } from "../src/settings";
+import type { Progress } from "../src/types";
+import { CANCELLED_MESSAGE, type ProgressSource } from "../src/progress";
 
 const hoisted = vi.hoisted(() => ({ splitOverride: null as null | ((...a: any[]) => Promise<any>) }));
 vi.mock("../src/pdf/chunk", async () => {
@@ -607,5 +609,94 @@ describe("queuePaths and chunk cache", () => {
     impl(c, -1, () => new Error("x"));
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+  });
+});
+
+describe("progress events", () => {
+  type Ev = [string, Progress, ProgressSource];
+  function withSink() {
+    const c = setup();
+    const events: Ev[] = [];
+    (c.flow as any).deps.progress = (p: string, e: Progress, src: ProgressSource) => { events.push([p, e, src]); };
+    return { c, events, kinds: () => events.map((x) => x[1]) };
+  }
+
+  test("3-chunk pdf emits 'Preparing…', chunk 1/3, 2/3, 3/3 steps then done with folder and note counts", async () => {
+    const { c, events, kinds } = withSink();
+    c.settings.pdfPagesPerChunk = 1;
+    c.files.set("Topic/a.pdf", pdf3);
+    c.extract.mockImplementation(async (...a: any[]) => ({ summary: "s", notes: [note("Anatomy", `N${a[3]}`, ["k"], String(a[3] + 1))] }));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(kinds()).toEqual([
+      { kind: "step", text: "Preparing a.pdf…" },
+      { kind: "step", text: "Analysing a.pdf (chunk 1/3)…" },
+      { kind: "step", text: "Analysing a.pdf (chunk 2/3)…" },
+      { kind: "step", text: "Analysing a.pdf (chunk 3/3)…" },
+      { kind: "done", folders: 1, notes: 3 },
+    ]);
+    expect(events.every((e) => e[0] === "Topic/a.pdf" && e[2].kind === "pdf" && e[2].resumed === false)).toBe(true);
+    expect(c.infos).toEqual(["Extracted 3 notes from a.pdf"]);
+  });
+
+  test("encrypted pdf emits failed after the preparing step; cancelled pdf emits failed CANCELLED_MESSAGE", async () => {
+    const e1 = withSink();
+    e1.c.files.set("Topic/secret.pdf", encrypted);
+    await e1.c.flow.run(job("Topic/secret.pdf"), noSignal, noCp);
+    expect(e1.kinds()).toEqual([
+      { kind: "step", text: "Preparing secret.pdf…" },
+      { kind: "failed", error: "Could not analyse secret.pdf: the PDF is encrypted." },
+    ]);
+    expect(e1.c.errors).toHaveLength(1);
+
+    const e2 = withSink();
+    e2.c.settings.pdfPagesPerChunk = 1;
+    e2.c.files.set("Topic/a.pdf", pdf3);
+    const sig = { cancelled: false };
+    e2.c.extract.mockImplementation(async () => { sig.cancelled = true; return { summary: "s", notes: [] }; });
+    await e2.c.flow.run(job("Topic/a.pdf"), sig, noCp);
+    expect(e2.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+    expect(e2.kinds().filter((e) => e.kind === "failed" || e.kind === "done")).toHaveLength(1);
+  });
+
+  test("silent failure exits still emit failed after the first step", async () => {
+    const a = withSink();
+    a.c.files.set("Topic/a.pdf", pdf1);
+    a.c.client.v = null;
+    await a.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(a.kinds()).toEqual([
+      { kind: "step", text: "Preparing a.pdf…" },
+      { kind: "failed", error: "Add your Claude API key in the plugin settings before analysing PDFs." },
+    ]);
+
+    const b = withSink();
+    b.c.files.set("Other/a.pdf", pdf1);
+    await b.c.flow.run(job("Other/a.pdf"), noSignal, noCp);
+    expect(b.kinds()).toEqual([
+      { kind: "step", text: "Preparing a.pdf…" },
+      { kind: "failed", error: "Not inside a research folder" },
+    ]);
+
+    const d = withSink();
+    d.c.files.set("Topic/a.pdf", pdf1);
+    d.c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    await d.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(d.kinds().at(-1)).toEqual({ kind: "failed", error: "Could not analyse a.pdf: bad request" });
+  });
+
+  test("already processed pdf emits nothing", async () => {
+    const { c, events } = withSink();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.processed[await sha256(pdf1)] = { path: "x", date: "d" };
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(events).toEqual([]);
+  });
+
+  test("retryable chunk error emits the retry step and rethrows", async () => {
+    const { c, kinds } = withSink();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.extract.mockRejectedValue(new ApiError("overloaded", 529));
+    await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(ApiError);
+    expect(kinds().at(-1)).toEqual({ kind: "step", text: "Retrying a.pdf after a temporary error…" });
+    expect(kinds().some((e) => e.kind === "failed" || e.kind === "done")).toBe(false);
   });
 });

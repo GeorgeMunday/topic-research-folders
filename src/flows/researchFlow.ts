@@ -1,4 +1,5 @@
-import type { Job, Outline, SubfolderSuggestion } from "../types";
+import type { Job, Outline, Progress, SubfolderSuggestion } from "../types";
+import { CANCELLED_MESSAGE, OUTLINE_STAGE_MS, type ProgressSink, type ProgressSource } from "../progress";
 import type { Settings } from "../settings";
 import type { ResearchClient } from "../research/claudeClient";
 import type { VaultWriter } from "../vault/writer";
@@ -7,7 +8,7 @@ import { isRetryable } from "../jobs/backoff";
 import { isTriggerName, strippedPath } from "../trigger";
 import { uniqueName } from "../names";
 
-export interface Approver { approve(outline: Outline): Promise<SubfolderSuggestion[] | null>; }
+export interface Approver { approve(outline: Outline, jobPath: string): Promise<SubfolderSuggestion[] | null>; }
 export interface Notifier { info(msg: string): void; error(msg: string): void; }
 export interface ResearchDeps {
   client: () => ResearchClient | null;
@@ -20,6 +21,9 @@ export interface ResearchDeps {
   enqueue: (job: Job) => boolean;
   listPdfs: (folder: string) => string[];
   queuePdfs: (paths: string[]) => Promise<void>;
+  progress?: ProgressSink;
+  /** Schedules fn after ms; returns a function that cancels it. */
+  later?: (fn: () => void, ms: number) => () => void;
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -74,25 +78,36 @@ export class ResearchFlow {
 
   run: Runner = async (job, signal, checkpoint) => {
     if (job.kind !== "research") return;
-    const { writer, notify, approver, settings, today } = this.deps;
+    const { writer, notify, approver, settings, today, progress, later } = this.deps;
+    const resumed = Boolean(job.approved);
+    const src: ProgressSource = { kind: "research", resumed };
+    const emit = (e: Progress) => { if (progress) progress(job.path, e, src); };
+    const finish = (e: Progress & { kind: "done" | "failed" }) => emit(e);
+    const cancelled = () => finish({ kind: "failed", error: CANCELLED_MESSAGE });
+    const retrying = (err: unknown) => { if (isRetryable(err)) emit({ kind: "step", text: "Retrying after a temporary error…" }); };
+    // Pre-start exits: the sink gets a terminal failed with the notice text; otherwise the notice itself.
+    const reject = (msg: string, level: "info" | "error") => {
+      if (progress) finish({ kind: "failed", error: msg });
+      else notify[level](msg);
+    };
     const client = this.deps.client();
     const s = settings();
     if (!client || !s.apiKey.trim()) {
-      notify.error("Add your Claude API key in the plugin settings before researching a topic.");
+      reject("Add your Claude API key in the plugin settings before researching a topic.", "error");
       return;
     }
     const topic = baseName(job.path);
     // A fresh job on a folder that already is a research root (e.g. synced in, or re-triggered) would duplicate work.
     const fresh = !job.approved && job.done.length === 0;
     if (fresh && (await writer.isResearchRoot(job.path))) {
-      notify.info(`"${topic}" is already researched.`);
+      reject(`"${topic}" is already researched.`, "info");
       return;
     }
     // findResearchRoot looks at ancestors of the path it is given.
     const r = await writer.findResearchRoot(job.path);
     const parents = r ? [...r.parents, r.topic] : [];
     if (parents.length + 1 > s.maxDepth) {
-      notify.error(`Not researching "${topic}": nesting would be ${parents.length + 1} levels deep (limit ${s.maxDepth}).`);
+      reject(`Not researching "${topic}": nesting would be ${parents.length + 1} levels deep (limit ${s.maxDepth}).`, "error");
       return;
     }
 
@@ -100,47 +115,82 @@ export class ResearchFlow {
     let outline: Outline | undefined;
     let approved = job.approved;
     if (!approved) {
-      outline = await client.outline(topic, parents, s.maxSubfolders);
-      const picked = await approver.approve(outline);
-      if (!picked || picked.length === 0) return;
+      let cancelTimer: (() => void) | undefined;
+      if (progress && s.useWebSearch) {
+        emit({ kind: "step", text: "Searching the web…" });
+        cancelTimer = later?.(() => emit({ kind: "step", text: "Suggesting folders…" }), OUTLINE_STAGE_MS);
+      } else {
+        emit({ kind: "step", text: "Suggesting folders…" });
+      }
+      try {
+        outline = await client.outline(topic, parents, s.maxSubfolders);
+      } catch (err) {
+        if (!progress) throw err;
+        if (isRetryable(err)) { retrying(err); throw err; }
+        finish({ kind: "failed", error: err instanceof Error ? err.message : String(err) });
+        return;
+      } finally {
+        cancelTimer?.();
+      }
+      if (signal.cancelled) { cancelled(); return; }
+      emit({ kind: "outline", outline });
+      const picked = await approver.approve(outline, job.path);
+      if (signal.cancelled || !picked || picked.length === 0) { cancelled(); return; }
       approved = picked;
       current = { ...job, approved };
       await checkpoint(current);
+    } else {
+      emit({ kind: "step", text: "Resuming research…" });
     }
 
     const done = [...job.done];
     // Titles are known only for subfolders written in this run; resumed (already done) ones link with no note titles.
     const results = new Map<string, { subfolder: string; noteTitles: string[]; folder?: string }>();
     let failures = 0;
-    for (const sub of approved) {
+    let written = 0;
+    let notesWritten = 0;
+    for (const [i, sub] of approved.entries()) {
       if (done.includes(sub.name)) continue;
-      if (signal.cancelled) return;
+      if (signal.cancelled) { cancelled(); return; }
+      emit({ kind: "writing", index: i + 1, total: approved.length, name: sub.name });
       try {
         const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder);
         const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes }, today());
         results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
+        written++;
+        notesWritten += res.noteTitles.length;
       } catch (err) {
-        if (isRetryable(err)) throw err;
+        if (isRetryable(err)) { retrying(err); throw err; }
         failures++;
-        notify.error(`Could not research "${sub.name}": ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!progress) notify.error(`Could not research "${sub.name}": ${msg}`);
+        emit({ kind: "itemDone", name: sub.name, ok: false, error: msg });
         continue;
       }
+      emit({ kind: "itemDone", name: sub.name, ok: true });
       done.push(sub.name);
       current = { ...current, done: [...done] } as Job;
       await checkpoint(current);
     }
-    if (signal.cancelled) return;
+    if (signal.cancelled) { cancelled(); return; }
 
     const ov: Outline = outline ?? { topic, summary: "", subfolders: approved };
     const links = approved
       .filter((a) => results.has(a.name) || done.includes(a.name))
       .map((a) => results.get(a.name) ?? { subfolder: a.name, noteTitles: [] });
-    await writer.writeOverview(job.path, ov, links, today());
+    try {
+      await writer.writeOverview(job.path, ov, links, today());
 
-    if (s.processPdfs) {
-      const pdfs = this.deps.listPdfs(job.path);
-      if (pdfs.length > 0) await this.deps.queuePdfs(pdfs);
+      if (s.processPdfs) {
+        const pdfs = this.deps.listPdfs(job.path);
+        if (pdfs.length > 0) await this.deps.queuePdfs(pdfs);
+      }
+    } catch (err) {
+      retrying(err);
+      if (!isRetryable(err)) finish({ kind: "failed", error: err instanceof Error ? err.message : String(err) });
+      throw err;
     }
-    notify.info(`Researched ${topic}: ${links.length} subfolder${links.length === 1 ? "" : "s"}${failures ? ` (${failures} failed)` : ""}`);
+    if (progress) finish({ kind: "done", folders: written + job.done.length, notes: notesWritten });
+    else notify.info(`Researched ${topic}: ${links.length} subfolder${links.length === 1 ? "" : "s"}${failures ? ` (${failures} failed)` : ""}`);
   };
 }
