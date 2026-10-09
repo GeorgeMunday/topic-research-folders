@@ -3,7 +3,7 @@ import type { App } from "obsidian";
 import type { Outline, Progress, SubfolderSuggestion } from "../types";
 import type { Approver } from "../flows/researchFlow";
 import { selectApproved, type SuggestionRow } from "./selection";
-import { initialState, reduce, progressFraction, summaryText, type ModalState } from "./progressModel";
+import { initialState, reduce, progressFraction, summaryText, writingText, itemText, type ModalState } from "./progressModel";
 
 export interface ProgressModalHooks { onCancel: () => void; onRetry: () => void; }
 
@@ -21,7 +21,12 @@ export class ResearchProgressModal extends Modal implements Approver {
 
   handle(e: Progress): void {
     this.state = reduce(this.state, e);
+    if (this.isDone()) this.settle(null);
     if (this.isOpen) this.render();
+  }
+
+  private closeIfOpen(): void {
+    if (this.isOpen) this.close();
   }
 
   isDone(): boolean {
@@ -32,7 +37,7 @@ export class ResearchProgressModal extends Modal implements Approver {
   forceClose(): void {
     this.forced = true;
     this.settle(null);
-    if (this.isOpen) this.close();
+    this.closeIfOpen();
   }
 
   approve(outline: Outline, _jobPath: string): Promise<SubfolderSuggestion[] | null> {
@@ -60,21 +65,23 @@ export class ResearchProgressModal extends Modal implements Approver {
   onClose(): void {
     this.isOpen = false;
     this.contentEl.empty();
-    if (this.state.phase === "choose") this.settle(null);
+    this.settle(null);
   }
 
   private render(): void {
     const s = this.state;
     const { contentEl } = this;
-    if (s.phase === "cancelled") { this.close(); return; }
+    if (s.phase === "cancelled") { this.closeIfOpen(); return; }
     contentEl.empty();
     const buttons = createDiv({ cls: "modal-button-container" });
 
     if (s.phase === "loading") {
       this.titleEl.setText(`Researching ${s.topic}…`);
-      contentEl.createDiv({ cls: "trf-spinner" });
-      contentEl.createEl("p", { text: s.step, cls: "trf-muted" });
-      buttons.createEl("button", { text: "Cancel" }).addEventListener("click", () => { this.hooks.onCancel(); this.close(); });
+      const status = contentEl.createDiv({ cls: "trf-spinner" });
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "polite");
+      contentEl.createEl("p", { text: s.step, cls: "trf-muted" }).setAttribute("aria-live", "polite");
+      buttons.createEl("button", { text: "Cancel" }).addEventListener("click", () => { this.hooks.onCancel(); this.closeIfOpen(); });
     } else if (s.phase === "choose") {
       this.titleEl.setText(`Research: ${s.outline?.topic ?? s.topic}`);
       contentEl.createEl("p", { text: s.outline?.summary ?? "" });
@@ -98,29 +105,33 @@ export class ResearchProgressModal extends Modal implements Approver {
         this.settle(approved);
         this.render();
       });
-      buttons.createEl("button", { text: "Cancel" }).addEventListener("click", () => { this.settle(null); this.close(); });
+      buttons.createEl("button", { text: "Cancel" }).addEventListener("click", () => { this.settle(null); this.closeIfOpen(); });
       refresh();
     } else if (s.phase === "writing") {
       this.titleEl.setText(`Researching ${s.topic}…`);
       const bar = contentEl.createDiv({ cls: "trf-progress" });
-      const inner = bar.createDiv();
-      inner.style.width = `${progressFraction(s) * 100}%`;
-      contentEl.createEl("p", { text: `Writing folder ${s.index} of ${s.total}: ${s.current}` });
+      const pct = Math.round(progressFraction(s) * 100);
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      bar.setAttribute("aria-valuenow", String(pct));
+      bar.style.setProperty("--trf-progress", String(pct));
+      bar.createDiv();
+      contentEl.createEl("p", { text: writingText(s) });
       const list = contentEl.createEl("ul");
       for (const it of s.items) {
-        const mark = it.status === "ok" ? "✓" : it.status === "error" ? `✗ ${it.error ?? ""}`.trimEnd() : "…";
-        list.createEl("li", { text: `${mark} ${it.name}`, cls: `trf-item-${it.status}` });
+        list.createEl("li", { text: itemText(it), cls: `trf-item-${it.status}` });
       }
-      buttons.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
+      buttons.createEl("button", { text: "Close" }).addEventListener("click", () => this.closeIfOpen());
     } else if (s.phase === "done") {
       this.titleEl.setText(`Researched ${s.topic}`);
       contentEl.createEl("p", { text: summaryText(s) });
-      buttons.createEl("button", { text: "Close", cls: "mod-cta" }).addEventListener("click", () => this.close());
+      buttons.createEl("button", { text: "Close", cls: "mod-cta" }).addEventListener("click", () => this.closeIfOpen());
     } else {
       this.titleEl.setText(`Research failed: ${s.topic}`);
       contentEl.createEl("p", { text: s.error ?? "Unknown error", cls: "trf-error" });
-      buttons.createEl("button", { text: "Retry", cls: "mod-cta" }).addEventListener("click", () => { this.hooks.onRetry(); this.close(); });
-      buttons.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
+      buttons.createEl("button", { text: "Retry", cls: "mod-cta" }).addEventListener("click", () => { this.hooks.onRetry(); this.closeIfOpen(); });
+      buttons.createEl("button", { text: "Close" }).addEventListener("click", () => this.closeIfOpen());
     }
     contentEl.appendChild(buttons);
   }

@@ -27,7 +27,7 @@ export function reduce(s: ModalState, a: ModalAction): ModalState {
   if (s.phase === "done" || s.phase === "failed" || s.phase === "cancelled") return s;
   switch (a.kind) {
     case "step": return { ...s, step: a.text };
-    case "outline": return { ...s, phase: "choose", outline: a.outline };
+    case "outline": return s.phase === "loading" ? { ...s, phase: "choose", outline: a.outline } : s;
     case "approved":
       return { ...s, phase: "writing", items: a.names.map((name) => ({ name, status: "pending" as const })), total: a.names.length, index: 0, current: "" };
     case "writing":
@@ -50,4 +50,14 @@ export function summaryText(s: ModalState): string {
   const f = `${s.folders} ${s.folders === 1 ? "folder" : "folders"}`;
   const n = `${s.notes} ${s.notes === 1 ? "note" : "notes"}`;
   return `Done — ${f}, ${n}`;
+}
+
+export function writingText(s: ModalState): string {
+  return s.index <= 0 ? "Writing folders…" : `Writing folder ${s.index} of ${s.total}: ${s.current}`;
+}
+
+export function itemText(it: ModalState["items"][number]): string {
+  if (it.status === "ok") return `✓ ${it.name}`;
+  if (it.status === "error") return it.error ? `✗ ${it.name} — ${it.error}` : `✗ ${it.name}`;
+  return `… ${it.name}`;
 }

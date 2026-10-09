@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { initialState, reduce, progressFraction, summaryText } from "../src/ui/progressModel";
+import { initialState, reduce, progressFraction, summaryText, writingText, itemText } from "../src/ui/progressModel";
 import { CANCELLED_MESSAGE } from "../src/progress";
 import type { Outline } from "../src/types";
 
@@ -96,4 +96,27 @@ test("actions after a terminal phase are ignored", () => {
   expect(reduce(failed, { kind: "done", folders: 1, notes: 2 })).toBe(failed);
   expect(reduce(failed, { kind: "failed", error: "bad" })).toBe(failed);
   expect(reduce(failed, { kind: "step", text: "x" })).toBe(failed);
+});
+
+test("a late or duplicate outline does not flip a non-loading modal back to choose", () => {
+  const w = writing();
+  expect(reduce(w, { kind: "outline", outline })).toBe(w);
+  const done = reduce(w, { kind: "done", folders: 1, notes: 1 });
+  expect(reduce(done, { kind: "outline", outline })).toBe(done);
+  const c = reduce(initialState("Bats"), { kind: "outline", outline });
+  expect(reduce(c, { kind: "outline", outline })).toBe(c);
+});
+
+test("writingText is generic before the first writing event", () => {
+  expect(writingText(writing())).toBe("Writing folders…");
+  const s = reduce(writing(), { kind: "writing", index: 2, total: 2, name: "B" });
+  expect(writingText(s)).toBe("Writing folder 2 of 2: B");
+});
+
+test("itemText formats each status", () => {
+  expect(itemText({ name: "A", status: "ok" })).toBe("✓ A");
+  expect(itemText({ name: "A", status: "error", error: "boom" })).toBe("✗ A — boom");
+  expect(itemText({ name: "A", status: "error" })).toBe("✗ A");
+  expect(itemText({ name: "A", status: "working" })).toBe("… A");
+  expect(itemText({ name: "A", status: "pending" })).toBe("… A");
 });

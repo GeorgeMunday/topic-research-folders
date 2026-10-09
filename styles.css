@@ -30,6 +30,7 @@
 }
 .trf-progress > div {
   height: 100%;
+  width: calc(var(--trf-progress, 0) * 1%);
   background: var(--interactive-accent);
   transition: width 0.3s ease;
 }
