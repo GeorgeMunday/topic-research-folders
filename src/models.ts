@@ -70,11 +70,12 @@ export function sortModels(models: ModelInfo[]): ModelInfo[] {
   });
 }
 
-export function modelOptions(models: ModelInfo[], savedId: string):
+export function modelOptions(models: ModelInfo[], savedId: string, chosen: boolean):
   { options: { value: string; label: string }[]; selected: string; warning?: string } {
   const usable = sortModels(models.filter((m) => m.lifecycle !== "retired"));
   const options = usable.map((m) => ({ value: m.id, label: m.lifecycle === "deprecated" ? `${m.display_name} (deprecated)` : m.display_name }));
-  if (savedId === "") {
+  const savedActive = usable.some((m) => m.id === savedId && m.lifecycle === "active");
+  if (savedId === "" || (!chosen && !savedActive)) {
     const firstActive = usable.find((m) => m.lifecycle === "active");
     const pick = usable.find((m) => m.id === DEFAULT_MODEL) ?? firstActive ?? usable[0];
     return { options, selected: pick ? pick.id : "" };
@@ -195,9 +196,9 @@ export interface PickerView {
   selected: string; hint?: string; error?: string; warning?: string;
 }
 
-export function pickerView(state: CatalogState, savedId: string): PickerView {
+export function pickerView(state: CatalogState, savedId: string, chosen: boolean): PickerView {
   const justSaved = savedId ? [{ value: savedId, label: savedId }] : [];
-  const fromModels = (): ReturnType<typeof modelOptions> => modelOptions(state.models, savedId);
+  const fromModels = (): ReturnType<typeof modelOptions> => modelOptions(state.models, savedId, chosen);
   if (state.status === "nokey") {
     return { disabled: true, spinning: false, options: justSaved, selected: savedId, hint: "Add your API key to load models" };
   }

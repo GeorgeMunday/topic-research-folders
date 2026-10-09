@@ -7,6 +7,8 @@ import type { ModelCache, ModelCatalog, ModelInfo } from "./models";
 export interface Settings {
   apiKey: string;
   model: string;
+  /** True once the user picked a model from the dropdown (an automatic selection does not count). */
+  modelChosen: boolean;
   useWebSearch: boolean;
   triggerSuffix: string;
   stripSuffix: boolean;
@@ -30,6 +32,7 @@ export interface PluginData {
 export const DEFAULT_SETTINGS: Settings = {
   apiKey: "",
   model: "claude-sonnet-5-5",
+  modelChosen: false,
   useWebSearch: true,
   triggerSuffix: "+",
   stripSuffix: true,
@@ -119,6 +122,9 @@ export function mergeData(raw: unknown): PluginData {
       out[key] = v;
     }
   }
+  // Data saved before the flag existed: a model other than the default must have been picked by the user.
+  if (saved.modelChosen === undefined) settings.modelChosen = typeof saved.model === "string" && saved.model !== "" && saved.model !== DEFAULT_SETTINGS.model;
+  else if (typeof saved.modelChosen !== "boolean") settings.modelChosen = false;
   if (validateSuffix(settings.triggerSuffix) !== null) settings.triggerSuffix = DEFAULT_SETTINGS.triggerSuffix;
   return {
     settings,
@@ -163,7 +169,7 @@ export class SettingsTab extends PluginSettingTab {
     row.addDropdown((d) => {
       select = d.selectEl;
       setDisabled = (v) => { d.setDisabled(v); };
-      d.onChange((v) => { if (v) { s.model = v; save(); } });
+      d.onChange((v) => { if (v) { s.model = v; s.modelChosen = true; save(); } });
     });
     row.addExtraButton((b) => {
       b.setIcon("refresh-cw").setTooltip("Refresh models").onClick(() => { void catalog.refresh(); });
@@ -172,11 +178,12 @@ export class SettingsTab extends PluginSettingTab {
 
     const render = () => {
       const state = catalog.state();
-      if (s.model === "" && state.status === "ready") {
-        const sel = modelOptions(state.models, "").selected;
-        if (sel) { s.model = sel; save(); }
+      if (!s.modelChosen && state.status === "ready") {
+        // Automatic selection: saved without marking the model as chosen.
+        const sel = modelOptions(state.models, s.model, false).selected;
+        if (sel && sel !== s.model) { s.model = sel; save(); }
       }
-      const v = pickerView(state, s.model);
+      const v = pickerView(state, s.model, s.modelChosen);
       if (select) {
         const sel: HTMLSelectElement = select;
         sel.empty();

@@ -113,29 +113,48 @@ describe("sortModels / modelOptions", () => {
       m("a", { display_name: "Model A" }),
       m("d", { display_name: "Model D", lifecycle: "deprecated", created_at: "2020-01-01T00:00:00Z" }),
       m("r", { display_name: "Model R", lifecycle: "retired" }),
-    ], "a");
+    ], "a", true);
     expect(r.options).toEqual([{ value: "a", label: "Model A" }, { value: "d", label: "Model D (deprecated)" }]);
     expect(r.selected).toBe("a");
     expect(r.warning).toBeUndefined();
   });
 
   test("modelOptions: saved id missing -> extra '<id> (unavailable)' option, selected stays saved, warning says to pick another", () => {
-    const r = modelOptions([m("a"), m("r", { lifecycle: "retired" })], "r");
+    const r = modelOptions([m("a"), m("r", { lifecycle: "retired" })], "r", true);
     expect(r.options.map((o) => o.value)).toEqual(["a", "r"]);
     expect(r.options[1].label).toBe("r (unavailable)");
     expect(r.selected).toBe("r");
     expect(r.warning).toMatch(/pick another model/i);
-    const r2 = modelOptions([m("a")], "gone");
+    const r2 = modelOptions([m("a")], "gone", true);
     expect(r2.selected).toBe("gone");
     expect(r2.options).toContainEqual({ value: "gone", label: "gone (unavailable)" });
   });
 
   test("modelOptions: empty saved id -> claude-sonnet-5-5 if listed, else the first active model", () => {
-    const withDefault = modelOptions([m("zzz", { created_at: "2030-01-01T00:00:00Z" }), m("claude-sonnet-5-5")], "");
+    const withDefault = modelOptions([m("zzz", { created_at: "2030-01-01T00:00:00Z" }), m("claude-sonnet-5-5")], "", false);
     expect(withDefault.selected).toBe("claude-sonnet-5-5");
     expect(withDefault.warning).toBeUndefined();
-    const without = modelOptions([m("old", { created_at: "2020-01-01T00:00:00Z" }), m("new", { created_at: "2030-01-01T00:00:00Z" })], "");
+    const without = modelOptions([m("old", { created_at: "2020-01-01T00:00:00Z" }), m("new", { created_at: "2030-01-01T00:00:00Z" })], "", false);
     expect(without.selected).toBe("new");
+  });
+  test("modelOptions: not chosen and default missing -> first active model, no warning, no unavailable option", () => {
+    const r = modelOptions([m("old", { created_at: "2020-01-01T00:00:00Z" }), m("new", { created_at: "2030-01-01T00:00:00Z" })], "claude-sonnet-5-5", false);
+    expect(r.selected).toBe("new");
+    expect(r.warning).toBeUndefined();
+    expect(r.options.map((o) => o.value)).toEqual(["new", "old"]);
+  });
+
+  test("modelOptions: chosen and missing -> '<id> (unavailable)' option and a warning (unchanged)", () => {
+    const r = modelOptions([m("a")], "gone", true);
+    expect(r.selected).toBe("gone");
+    expect(r.options).toContainEqual({ value: "gone", label: "gone (unavailable)" });
+    expect(r.warning).toMatch(/pick another model/i);
+  });
+
+  test("modelOptions: not chosen and default listed -> default selected", () => {
+    const r = modelOptions([m("zzz", { created_at: "2030-01-01T00:00:00Z" }), m("claude-sonnet-5-5")], "gone", false);
+    expect(r.selected).toBe("claude-sonnet-5-5");
+    expect(r.warning).toBeUndefined();
   });
 });
 
@@ -385,33 +404,47 @@ describe("ModelCatalog", () => {
 
 describe("pickerView", () => {
   test("pickerView: nokey -> disabled + hint 'Add your API key to load models'; loading -> disabled, spinning, single option 'Loading models…'; error -> enabled, error text, current model still selected; ready with missing saved model -> warning", () => {
-    const nokey = pickerView({ status: "nokey", models: [] }, "claude-sonnet-5-5");
+    const nokey = pickerView({ status: "nokey", models: [] }, "claude-sonnet-5-5", false);
     expect(nokey.disabled).toBe(true);
     expect(nokey.hint).toBe("Add your API key to load models");
     expect(nokey.selected).toBe("claude-sonnet-5-5");
 
-    const loading = pickerView({ status: "loading", models: [m("a")] }, "a");
+    const loading = pickerView({ status: "loading", models: [m("a")] }, "a", false);
     expect(loading.disabled).toBe(true);
     expect(loading.spinning).toBe(true);
     expect(loading.options).toEqual([{ value: "", label: "Loading models…" }]);
 
-    const err = pickerView({ status: "error", models: [m("a"), m("b")], error: "boom" }, "b");
+    const err = pickerView({ status: "error", models: [m("a"), m("b")], error: "boom" }, "b", true);
     expect(err.disabled).toBe(false);
     expect(err.spinning).toBe(false);
     expect(err.error).toBe("boom");
     expect(err.selected).toBe("b");
 
-    const errMissing = pickerView({ status: "error", models: [m("a")], error: "boom" }, "gone");
+    const errMissing = pickerView({ status: "error", models: [m("a")], error: "boom" }, "gone", true);
     expect(errMissing.selected).toBe("gone");
     expect(errMissing.options).toContainEqual({ value: "gone", label: "gone (unavailable)" });
 
-    const ready = pickerView({ status: "ready", models: [m("a")] }, "gone");
+    const ready = pickerView({ status: "ready", models: [m("a")] }, "gone", true);
     expect(ready.disabled).toBe(false);
     expect(ready.warning).toMatch(/pick another model/i);
     expect(ready.selected).toBe("gone");
 
-    const empty = pickerView({ status: "ready", models: [] }, "x");
+    const empty = pickerView({ status: "ready", models: [] }, "x", true);
     expect(empty.disabled).toBe(true);
     expect(empty.hint).toBe("No models available for this API key");
+  });
+
+  test("pickerView passes the chosen flag through", () => {
+    const st = { status: "ready" as const, models: [m("a")] };
+    const notChosen = pickerView(st, "gone", false);
+    expect(notChosen.selected).toBe("a");
+    expect(notChosen.warning).toBeUndefined();
+    expect(notChosen.options).toEqual([{ value: "a", label: "A" }]);
+    const chosen = pickerView(st, "gone", true);
+    expect(chosen.selected).toBe("gone");
+    expect(chosen.warning).toMatch(/pick another model/i);
+    const errNot = pickerView({ status: "error", models: [m("a")], error: "boom" }, "gone", false);
+    expect(errNot.selected).toBe("a");
+    expect(errNot.options.some((o) => o.label.includes("unavailable"))).toBe(false);
   });
 });

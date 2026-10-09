@@ -3,9 +3,19 @@ import { DEFAULT_SETTINGS, mergeData, validateSuffix } from "../src/settings";
 
 describe("settings", () => {
   test("defaults", () =>
-    expect(DEFAULT_SETTINGS).toEqual({ apiKey: "", model: "claude-sonnet-5-5", useWebSearch: true,
+    expect(DEFAULT_SETTINGS).toEqual({ apiKey: "", model: "claude-sonnet-5-5", modelChosen: false, useWebSearch: true,
       triggerSuffix: "+", stripSuffix: true, maxSubfolders: 6, notesPerSubfolder: 3, maxDepth: 3, maxConcurrent: 2,
       maxRetries: 4, processPdfs: true, pdfPagesPerChunk: 50, confirmAbovePages: 200 }));
+
+  test("mergeData: model other than the default without the flag -> modelChosen true; no model -> false", () => {
+    expect(mergeData({ settings: { model: "claude-opus-9" } }).settings.modelChosen).toBe(true);
+    expect(mergeData({ settings: {} }).settings.modelChosen).toBe(false);
+    expect(mergeData({ settings: { model: "claude-sonnet-5-5" } }).settings.modelChosen).toBe(false);
+    expect(mergeData({ settings: { model: "x", modelChosen: false } }).settings.modelChosen).toBe(false);
+    expect(mergeData({ settings: { model: "x", modelChosen: true } }).settings.modelChosen).toBe(true);
+    expect(mergeData({ settings: { modelChosen: "yes" } }).settings.modelChosen).toBe(false);
+    expect(mergeData({ settings: { model: "x", modelChosen: "yes" } }).settings.modelChosen).toBe(false);
+  });
 
   test("suffix validation", () => {
     expect(validateSuffix("+")).toBeNull();
