@@ -1,5 +1,5 @@
 import type { Job, Outline, Progress, SubfolderSuggestion } from "../types";
-import { CANCELLED_MESSAGE, nextRunId, OUTLINE_STAGE_MS, type ProgressSink, type ProgressSource } from "../progress";
+import { ALREADY_RESEARCHED_MESSAGE, CANCELLED_MESSAGE, nextRunId, OUTLINE_STAGE_MS, type ProgressSink, type ProgressSource } from "../progress";
 import type { Settings } from "../settings";
 import type { ResearchClient } from "../research/claudeClient";
 import type { VaultWriter } from "../vault/writer";
@@ -74,9 +74,12 @@ export class ResearchFlow {
     await this.researchFolder(finalPath);
   }
 
-  async researchFolder(path: string): Promise<void> {
+  /** force: re-run even when the folder is already researched (explicit "Research this folder"). */
+  async researchFolder(path: string, opts?: { force?: boolean }): Promise<void> {
     if (!(await this.precheck(path))) return;
-    const queued = this.deps.enqueue({ id: `research:${path}`, kind: "research", path, done: [] });
+    const job: Job = { id: `research:${path}`, kind: "research", path, done: [] };
+    if (opts?.force) job.force = true;
+    const queued = this.deps.enqueue(job);
     // A queued job may wait a long time for a slot; give the UI something to show right away.
     if (queued) this.deps.progress?.(path, { kind: "step", text: "Waiting for other jobs…" }, { kind: "research", resumed: false });
   }
@@ -113,8 +116,8 @@ export class ResearchFlow {
     const topic = baseName(job.path);
     // A fresh job on a folder that already is a research root (e.g. synced in, or re-triggered) would duplicate work.
     const fresh = !job.approved && job.done.length === 0;
-    if (fresh && (await writer.isResearchRoot(job.path))) {
-      reject(`"${topic}" is already researched.`, "info");
+    if (fresh && !job.force && (await writer.isResearchRoot(job.path))) {
+      reject(ALREADY_RESEARCHED_MESSAGE, "info");
       return;
     }
     // findResearchRoot looks at ancestors of the path it is given.

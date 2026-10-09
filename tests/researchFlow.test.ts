@@ -5,7 +5,7 @@ import { JobQueue, ApiError } from "../src/jobs/queue";
 import type { Job, Outline, SubfolderSuggestion, NoteContent } from "../src/types";
 import type { Settings } from "../src/settings";
 import type { Progress } from "../src/types";
-import { CANCELLED_MESSAGE, OUTLINE_STAGE_MS, type ProgressSource } from "../src/progress";
+import { ALREADY_RESEARCHED_MESSAGE, CANCELLED_MESSAGE, OUTLINE_STAGE_MS, type ProgressSource } from "../src/progress";
 
 class MemVault implements VaultLike {
   files = new Map<string, string>();
@@ -309,11 +309,43 @@ describe("run", () => {
     s.v.folders.add("T");
     s.v.files.set("T/T - Overview.md", ROOT_MARK);
     await s.run(rjob("T"));
-    expect(s.infos).toEqual(["\"T\" is already researched."]);
+    expect(s.infos).toEqual([ALREADY_RESEARCHED_MESSAGE]);
+    expect(s.errors).toEqual([]);
     expect(s.calls.outline).toEqual([]);
     expect(s.calls.approve).toBe(0);
     expect(s.calls.notes).toEqual([]);
     expect(s.v.files.size).toBe(1);
+  });
+
+  test("researchFlow: fresh job on a researched folder emits failed ALREADY_RESEARCHED_MESSAGE; with force it proceeds to the outline", async () => {
+    const s = setup();
+    const events: Progress[] = [];
+    s.deps.progress = (_p, e) => { events.push(e); };
+    s.v.folders.add("T");
+    s.v.files.set("T/T - Overview.md", ROOT_MARK);
+    await s.run(rjob("T"));
+    expect(events.at(-1)).toEqual({ kind: "failed", error: ALREADY_RESEARCHED_MESSAGE });
+    expect(s.calls.outline).toEqual([]);
+    expect(s.infos).toEqual([]);
+    events.length = 0;
+    await s.run(rjob("T", { force: true }));
+    expect(s.calls.outline).toHaveLength(1);
+    expect(events.some((e) => e.kind === "outline")).toBe(true);
+    expect(events.some((e) => e.kind === "failed" && e.error === ALREADY_RESEARCHED_MESSAGE)).toBe(false);
+  });
+
+  test("researchFolder(path, {force:true}) enqueues a job with force; onFolderEvent never forces", async () => {
+    const s = setup();
+    s.flow.markReady();
+    await s.flow.researchFolder("Stars", { force: true });
+    expect(s.enqueued[0]).toMatchObject({ kind: "research", path: "Stars", force: true });
+    await s.flow.researchFolder("Moons");
+    expect(s.enqueued[1]).not.toHaveProperty("force", true);
+    s.v.folders.add("Comets+");
+    await s.flow.onFolderEvent("Comets+");
+    const last = s.enqueued.at(-1) as Extract<Job, { kind: "research" }>;
+    expect(last.path).toBe("Comets");
+    expect(last.force).toBeFalsy();
   });
 
   test("resumed job continues even though its overview already exists", async () => {
@@ -321,7 +353,7 @@ describe("run", () => {
     s.v.folders.add("T");
     s.v.files.set("T/T - Overview.md", ROOT_MARK);
     await s.run(rjob("T", { approved: [A, B], done: ["A"] }));
-    expect(s.infos.some((m) => m.includes("already researched"))).toBe(false);
+    expect(s.infos.some((m) => m === ALREADY_RESEARCHED_MESSAGE)).toBe(false);
     expect(s.calls.notes.map((c) => c[2])).toEqual(["B"]);
     expect(s.v.files.has("T/B/B note.md")).toBe(true);
   });
@@ -576,7 +608,7 @@ describe("progress events", () => {
     b.v.folders.add("T");
     b.v.files.set("T/T - Overview.md", ROOT_MARK);
     await b.run(rjob("T"));
-    expect(b.kinds()).toEqual([{ kind: "failed", error: "\"T\" is already researched." }]);
+    expect(b.kinds()).toEqual([{ kind: "failed", error: ALREADY_RESEARCHED_MESSAGE }]);
     expect(b.infos).toEqual([]);
 
     const c = withSink({ settings: { maxDepth: 1 } });

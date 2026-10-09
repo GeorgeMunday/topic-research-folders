@@ -3,6 +3,11 @@ import type { Progress } from "./types";
 export interface ProgressSource { kind: "research" | "pdf"; resumed: boolean; runId?: number; }
 export type ProgressSink = (path: string, e: Progress, src: ProgressSource) => void;
 export const CANCELLED_MESSAGE = "Cancelled";
+export const ALREADY_RESEARCHED_MESSAGE = "Already researched — use 'Research this folder' to run it again";
+/** Messages that end a run without being a failure; shown as plain info, not as errors. */
+export function isNeutralMessage(msg: string): boolean {
+  return msg === CANCELLED_MESSAGE || msg === ALREADY_RESEARCHED_MESSAGE;
+}
 export const OUTLINE_STAGE_MS = 8000;
 
 let runIdCounter = 0;
@@ -80,7 +85,7 @@ export function noticeFor(
   if (src.kind !== "research" || ctx.modalOpen) return null;
   if (e.kind === "done") return { text: `Researched ${ctx.topic}: ${plural(e.folders, "folder")}, ${plural(e.notes, "note")}`, error: false };
   if (e.kind === "failed") {
-    if (e.error === CANCELLED_MESSAGE) return null;
+    if (isNeutralMessage(e.error)) return { text: e.error, error: false };
     return { text: `Research failed for ${ctx.topic}: ${e.error}`, error: true };
   }
   if (e.kind === "itemDone" && !e.ok) return { text: `Could not research "${e.name}": ${e.error ?? "unknown error"}`, error: true };

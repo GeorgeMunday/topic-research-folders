@@ -297,7 +297,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         if (!needReady()) return;
         const folder = parentOfActive();
         if (!folder) { new Notice("Open a note inside the folder you want to research."); return; }
-        guard(researchFlow.researchFolder(folder));
+        guard(researchFlow.researchFolder(folder, { force: true }));
       },
     });
 
@@ -336,7 +336,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       this.app.workspace.on("file-menu", (menu, file) => {
         if (!(file instanceof TFolder) || file.path === "/" || file.isRoot()) return;
         menu.addItem((item) =>
-          item.setTitle("Research this folder").setIcon("search").onClick(() => { if (needReady()) guard(researchFlow.researchFolder(file.path)); }));
+          item.setTitle("Research this folder").setIcon("search").onClick(() => { if (needReady()) guard(researchFlow.researchFolder(file.path, { force: true })); }));
       }),
     );
 

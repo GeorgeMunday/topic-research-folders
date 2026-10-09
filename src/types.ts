@@ -5,7 +5,7 @@ export interface SubfolderNotes { subfolder: string; notes: NoteContent[]; }
 export interface ExtractedNote extends NoteContent { subfolder: string; isNew: boolean; pages: string; }
 export interface PdfExtraction { summary: string; notes: ExtractedNote[]; }
 export type Job =
-  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[] }
+  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean }
   | { id: string; kind: "pdf"; path: string };
 export type Progress =
   | { kind: "step"; text: string }

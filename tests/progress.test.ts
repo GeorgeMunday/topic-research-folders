@@ -1,5 +1,5 @@
 import { test, expect, describe } from "vitest";
-import { ProgressTracker, CANCELLED_MESSAGE, noticeFor, RunGate, nextRunId, shouldOpenSession } from "../src/progress";
+import { ProgressTracker, CANCELLED_MESSAGE, ALREADY_RESEARCHED_MESSAGE, isNeutralMessage, noticeFor, RunGate, nextRunId, shouldOpenSession } from "../src/progress";
 
 const src = { kind: "research" as const, resumed: false };
 
@@ -85,7 +85,6 @@ test("noticeFor: done with singular and plural", () => {
   expect(noticeFor("A", { kind: "done", folders: 3, notes: 0 }, src, ctx)).toEqual({ text: "Researched Black holes: 3 folders, 0 notes", error: false });
 });
 test("noticeFor: failed and itemDone", () => {
-  expect(noticeFor("A", { kind: "failed", error: CANCELLED_MESSAGE }, src, ctx)).toBeNull();
   expect(noticeFor("A", { kind: "failed", error: "boom" }, src, ctx)).toEqual({ text: "Research failed for Black holes: boom", error: true });
   expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: false, error: "bad" }, src, ctx)).toEqual({ text: 'Could not research "Anatomy": bad', error: true });
   expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: false }, src, ctx)?.text).toBe('Could not research "Anatomy": unknown error');
@@ -180,4 +179,18 @@ describe("final-fix helpers", () => {
     expect(g.accept("A", { kind: "step", text: "Suggesting folders…" }, src)).toBe(true);
     expect(g.accept("A", { kind: "done", folders: 1, notes: 1 }, src)).toBe(true);
   });
+});
+
+test("isNeutralMessage: Cancelled and Already researched are neutral, other text is not", () => {
+  expect(isNeutralMessage(CANCELLED_MESSAGE)).toBe(true);
+  expect(isNeutralMessage(ALREADY_RESEARCHED_MESSAGE)).toBe(true);
+  expect(isNeutralMessage("boom")).toBe(false);
+  expect(isNeutralMessage("")).toBe(false);
+});
+test("noticeFor: failed Cancelled -> { text: 'Cancelled', error: false }", () => {
+  expect(noticeFor("A", { kind: "failed", error: CANCELLED_MESSAGE }, src, ctx)).toEqual({ text: "Cancelled", error: false });
+});
+test("noticeFor: failed ALREADY_RESEARCHED_MESSAGE -> neutral text, error false", () => {
+  expect(ALREADY_RESEARCHED_MESSAGE).toBe("Already researched — use 'Research this folder' to run it again");
+  expect(noticeFor("A", { kind: "failed", error: ALREADY_RESEARCHED_MESSAGE }, src, ctx)).toEqual({ text: ALREADY_RESEARCHED_MESSAGE, error: false });
 });
