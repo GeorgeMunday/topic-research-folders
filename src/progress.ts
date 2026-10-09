@@ -98,7 +98,8 @@ export function noticeFor(
   if (src.kind === "keypoint") {
     if (e.kind !== "failed") return null;
     if (isNeutralMessage(e.error)) return { text: e.error, error: false };
-    return { text: `Could not research "${baseName(path)}": ${e.error}`, error: true };
+    // Key point events are keyed by the entry note (`<folder>/<Key point>.md`): name the key point.
+    return { text: `Could not research "${baseName(path).replace(/\.md$/i, "")}": ${e.error}`, error: true };
   }
   if (e.kind === "done") return { text: `Researched ${ctx.topic}: ${plural(e.folders, "folder")}, ${plural(e.notes, "note")}`, error: false };
   if (e.kind === "failed") {

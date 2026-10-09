@@ -23,8 +23,7 @@ export interface HubActions {
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-/** The path a job's events use: a key point's events are keyed by its folder, everything else by its path. */
-const eventPath = (job: Job) => (job.kind === "keypoint" ? job.folder : job.path);
+const parentOf = (p: string) => (p.lastIndexOf("/") >= 0 ? p.slice(0, p.lastIndexOf("/")) : "");
 
 export class ProgressHub {
   private tracker = new ProgressTracker();
@@ -42,6 +41,9 @@ export class ProgressHub {
   private counts = { running: 0, queued: 0 };
   private shownStatus = "";
   private shownSpinners: string[] = [];
+  // Where a tracked path's spinner is shown: a key point's events are keyed by its entry note, the spinner
+  // goes on its folder (shared by every key point in it, so it stays until all of them have ended).
+  private display = new Map<string, string>();
   private disposed = false;
 
   constructor(private ui: HubUi, private actions: HubActions) {}
@@ -55,6 +57,7 @@ export class ProgressHub {
       return;
     }
     if (!this.gate.accept(path, e, src)) return;
+    if (src.kind === "keypoint") this.display.set(path, parentOf(path));
     this.seq.set(path, (this.seq.get(path) ?? 0) + 1);
     this.tracker.handle(path, e, src);
     if (e.kind === "failed" && src.runId !== undefined) this.lastFailed.set(path, { kind: src.kind, runId: src.runId });
@@ -82,7 +85,7 @@ export class ProgressHub {
   onQueueFailed(job: Job, err: unknown): void {
     if (this.disposed) return;
     const message = err instanceof Error ? err.message : "unexpected error";
-    const path = eventPath(job);
+    const path = job.path;
     const cur = this.gate.currentRun(path);
     const prev = this.lastFailed.get(path);
     let runId: number;
@@ -101,8 +104,10 @@ export class ProgressHub {
     this.pendingRun.clear();
     for (const p of this.pendingList) this.showReady(p.path);
     for (const job of jobs) {
-      const path = eventPath(job);
-      this.tracker.handle(path, { kind: "step", text: `Resuming ${baseName(path)}…` }, { kind: job.kind, resumed: true });
+      const path = job.path;
+      if (job.kind === "keypoint") this.display.set(path, parentOf(path));
+      const name = job.kind === "keypoint" ? job.point.name : baseName(path);
+      this.tracker.handle(path, { kind: "step", text: `Resuming ${name}…` }, { kind: job.kind, resumed: true });
     }
     this.refresh();
   }
@@ -260,7 +265,8 @@ export class ProgressHub {
 
   private refresh(): void {
     const active = this.tracker.active();
-    const spinners = [...new Set([...active, ...this.pendingList.map((p) => p.path)])];
+    for (const p of [...this.display.keys()]) if (!active.includes(p)) this.display.delete(p);
+    const spinners = [...new Set([...active.map((p) => this.display.get(p) ?? p), ...this.pendingList.map((p) => p.path)])];
     let status = "";
     if (active.length > 0) {
       status = this.tracker.statusSuffix();

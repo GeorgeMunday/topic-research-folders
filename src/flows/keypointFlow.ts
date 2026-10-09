@@ -20,8 +20,9 @@ const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /**
  * Stage 2 of PDF research: one queued job per key point. Researches the key point (web search per settings,
- * inside the client) with the PDF's context and writes the notes into the key point's folder. Events are
- * keyed by that folder (`ProgressSource.kind` "keypoint"); a failure concerns this key point only.
+ * inside the client) with the PDF's context and writes the notes into the key point's folder. Events are keyed
+ * by the job's entry note path (unique even when two key points share a folder; the hub shows the spinner on
+ * the folder), with `ProgressSource.kind` "keypoint"; a failure concerns this key point only.
  */
 export class KeypointFlow {
   private lastRun = new Map<string, number>();
@@ -43,12 +44,12 @@ export class KeypointFlow {
     if (this.retryPending.delete(job.path) && prev !== undefined) runId = prev;
     else { runId = nextRunId(); this.lastRun.set(job.path, runId); }
     const src: ProgressSource = { kind: "keypoint", resumed: false, runId };
-    const emit = (e: Progress) => { if (progress) progress(job.folder, e, src); };
+    const emit = (e: Progress) => { if (progress) progress(job.path, e, src); };
     // With a sink the hub adds `Could not research "<folder>": `; without one the full message is a notice.
     const fail = (reason: string) => {
       if (progress) emit({ kind: "failed", error: reason });
       else if (reason === CANCELLED_MESSAGE) notify.info(reason);
-      else notify.error(`Could not research "${baseName(job.folder)}": ${reason}`);
+      else notify.error(`Could not research "${baseName(job.path).replace(/\.md$/i, "")}": ${reason}`);
     };
     const point = job.point;
     const client = this.deps.client();

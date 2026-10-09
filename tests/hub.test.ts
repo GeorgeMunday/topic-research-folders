@@ -277,17 +277,19 @@ test("PDF two-stage run: pdf steps + done -> overview notice; keypoint steps spi
   expect(h.notices).toEqual([{ text: "Overview ready for paper.pdf — researching 2 key points", error: false, action: undefined }]);
   expect(h.spin()).toEqual([]);
 
-  const A = "Topics/Black holes/Key A";
-  const B = "Topics/Black holes/Key B";
+  const A = "Topics/Black holes/Key A/Key A.md";
+  const FA = "Topics/Black holes/Key A";
+  const B = "Topics/Black holes/Key B/Key B.md";
+  const FB = "Topics/Black holes/Key B";
   const ka: ProgressSource = { kind: "keypoint", resumed: false, runId: nextRunId() };
   const kb: ProgressSource = { kind: "keypoint", resumed: false, runId: nextRunId() };
   h.hub.sink(A, { kind: "step", text: "Researching Key A…" }, ka);
   h.hub.sink(B, { kind: "step", text: "Researching Key B…" }, kb);
-  expect(h.spin()).toEqual([A, B]);
+  expect(h.spin()).toEqual([FA, FB]);
   h.hub.sink(A, { kind: "failed", error: "boom" }, ka);
   h.hub.sink(A, { kind: "failed", error: "boom" }, ka);
   expect(h.notices.slice(1)).toEqual([{ text: 'Could not research "Key A": boom', error: true, action: undefined }]);
-  expect(h.spin()).toEqual([B]);
+  expect(h.spin()).toEqual([FB]);
   expect(h.status()).toBe("Researching Key B…");
   h.hub.sink(B, { kind: "done", folders: 1, notes: 3 }, kb);
   expect(h.notices).toHaveLength(2);
@@ -602,10 +604,10 @@ describe("item 2: spinner paths", () => {
     h.hub.sink(pdfPath, { kind: "failed", error: "bad" }, pdf);
     expect(h.spin()).toEqual([]);
     // Key point folders (Task 18 source kind): spin while the job runs; cancelled removes it.
-    const K = `${T}/Key point`;
+    const K = `${T}/Key point/Key point.md`;
     const kp: ProgressSource = { kind: "keypoint", resumed: false, runId: nextRunId() };
     h.hub.sink(K, { kind: "step", text: "Researching Key point…" }, kp);
-    expect(h.spin()).toEqual([K]);
+    expect(h.spin()).toEqual([`${T}/Key point`]);
     h.hub.sink(K, { kind: "failed", error: CANCELLED_MESSAGE }, kp);
     expect(h.spin()).toEqual([]);
     // Queue idle clears running work but keeps a pending review.

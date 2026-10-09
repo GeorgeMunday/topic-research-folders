@@ -91,8 +91,8 @@ describe("keypoint run", () => {
       { kind: "step", text: 'Researching "Fusion" (from paper.pdf)…' },
       { kind: "done", folders: 1, notes: 4 },
     ]);
-    // Events are keyed by the key point's folder and come from a "keypoint" source with one run id.
-    expect(u.events.every(([p, , s]) => p === "Stars/Fusion" && s.kind === "keypoint" && s.resumed === false)).toBe(true);
+    // Events are keyed by the key point's entry note path (unique per job) and come from a "keypoint" source with one run id.
+    expect(u.events.every(([p, , s]) => p === "Stars/Fusion/Fusion.md" && s.kind === "keypoint" && s.resumed === false)).toBe(true);
     expect(new Set(u.events.map((e) => e[2].runId)).size).toBe(1);
     expect([...u.errors, ...u.infos]).toEqual([]);
   });
@@ -113,7 +113,7 @@ describe("keypoint run", () => {
     const k = unit({ apiKey: " " });
     k.deps.progress = undefined;
     await k.flow.run(kjob("F", "Fusion"), noSignal, noCp);
-    expect(k.errors).toEqual(['Could not research "F": no Claude API key — add it in the plugin settings']);
+    expect(k.errors).toEqual(['Could not research "Fusion": no Claude API key — add it in the plugin settings']);
     expect(k.notes).not.toHaveBeenCalled();
   });
 
@@ -182,7 +182,7 @@ describe("keypoint run", () => {
     expect(max).toBe(2);
     const ends = u.events.filter(([, e]) => e.kind === "done" || e.kind === "failed").map(([p, e]) => [p, e.kind]);
     expect(ends).toHaveLength(5);
-    expect(ends.filter(([, k]) => k === "failed")).toEqual([["P/Gravity", "failed"]]);
+    expect(ends.filter(([, k]) => k === "failed")).toEqual([["P/Gravity/Gravity.md", "failed"]]);
     for (const n of NAMES.filter((x) => x !== "Gravity")) expect(u.v.files.has(`P/${n}/${n} 1.md`)).toBe(true);
     expect(failedByQueue).toEqual([]);
   });
@@ -208,7 +208,7 @@ describe("keypoint run", () => {
   });
 });
 
-describe("hub: keypoint events are keyed by the key point's folder", () => {
+describe("hub: keypoint events are keyed by the entry note path; the spinner shows on the folder", () => {
   function hubOnly() {
     const notices: { text: string; error: boolean }[] = [];
     const spinners: string[][] = [];
@@ -219,19 +219,33 @@ describe("hub: keypoint events are keyed by the key point's folder", () => {
     return { hub, notices, spin: () => spinners.at(-1) ?? [] };
   }
 
-  test("onQueueFailed for a keypoint job ends the folder's run: one notice naming the folder, spinner cleared", () => {
+  test("onQueueFailed for a keypoint job ends that job's run: one notice naming the key point, spinner cleared", () => {
     const h = hubOnly();
     const j = kjob("P/Gravity", "Gravity");
-    h.hub.sink("P/Gravity", { kind: "step", text: "Researching…" }, { kind: "keypoint", resumed: false, runId: 7 });
+    h.hub.sink("P/Gravity/Gravity.md", { kind: "step", text: "Researching…" }, { kind: "keypoint", resumed: false, runId: 7 });
     expect(h.spin()).toEqual(["P/Gravity"]);
     h.hub.onQueueFailed(j, new ApiError("overloaded", 529));
     expect(h.notices).toEqual([{ text: 'Could not research "Gravity": overloaded', error: true }]);
     expect(h.spin()).toEqual([]);
   });
 
-  test("restorePending shows 'Resuming' for a restored keypoint job on its folder", () => {
+  test("two key points in one folder: the folder spins once until both runs end; one failure gives one notice naming that point", () => {
     const h = hubOnly();
-    h.hub.restorePending([], [kjob("P/Gravity", "Gravity")]);
+    const src = (runId: number) => ({ kind: "keypoint" as const, resumed: false, runId });
+    h.hub.sink("S/Anatomy/Core.md", { kind: "step", text: "a" }, src(1));
+    h.hub.sink("S/Anatomy/Mantle.md", { kind: "step", text: "b" }, src(2));
+    expect(h.spin()).toEqual(["S/Anatomy"]);
+    h.hub.sink("S/Anatomy/Core.md", { kind: "failed", error: "bad request" }, src(1));
+    expect(h.notices).toEqual([{ text: 'Could not research "Core": bad request', error: true }]);
+    expect(h.spin()).toEqual(["S/Anatomy"]);
+    h.hub.sink("S/Anatomy/Mantle.md", { kind: "done", folders: 1, notes: 3 }, src(2));
+    expect(h.spin()).toEqual([]);
+    expect(h.notices).toHaveLength(1);
+  });
+
+  test("restorePending shows 'Resuming' for a restored keypoint job, spinning on its folder", () => {
+    const h = hubOnly();
+    h.hub.restorePending([], [kjob("P/Gravity", "Gravity"), kjob("P/Gravity", "Other")]);
     expect(h.spin()).toEqual(["P/Gravity"]);
   });
 });
@@ -246,7 +260,7 @@ beforeAll(async () => {
   pdf1 = u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength) as ArrayBuffer;
 });
 
-function world(opts: { overview?: PdfOverview; fail?: Record<string, Error> } = {}) {
+function world(opts: { overview?: PdfOverview; fail?: Record<string, Error>; delay?: Record<string, number>; during?: Record<string, () => void> } = {}) {
   const v = new MemVault();
   const writer = new VaultWriter(v);
   const settings = { ...settingsBase };
@@ -256,7 +270,8 @@ function world(opts: { overview?: PdfOverview; fail?: Record<string, Error> } = 
     async outline(): Promise<never> { throw new Error("unused"); },
     async notes(_t: string, _p: string[], s: SubfolderSuggestion, count: number) {
       calls.notes.push(s.name);
-      await new Promise((r) => setTimeout(r, 2));
+      await new Promise((r) => setTimeout(r, opts.delay?.[s.name] ?? 2));
+      opts.during?.[s.name]?.();
       const err = opts.fail?.[s.name];
       if (err) throw err;
       return Array.from({ length: count }, (_, i) => note(`${s.name} note ${i + 1}`));
@@ -313,6 +328,31 @@ const linkTargets = (md: string) => {
 };
 
 describe("two-stage PDF research end to end", () => {
+  test("two key points routed into one existing subfolder: one fails while the other runs -> one notice naming it, the folder spins until both end", async () => {
+    const snap: { spin: string[]; notices: string[] }[] = [];
+    // eslint-disable-next-line prefer-const
+    let w: ReturnType<typeof world>;
+    w = world({
+      overview: { ...FIVE, keyPoints: [kp("Mantle", 2, "Anatomy"), kp("Core", 3, "Anatomy")] },
+      fail: { Core: new ApiError("bad request", 400) },
+      delay: { Mantle: 40, Core: 1 },
+      during: { Mantle: () => { snap.push({ spin: [...(w.spinners.at(-1) ?? [])], notices: w.notices.map((n) => n.text) }); } },
+    });
+    w.v.folders.add("Stars");
+    w.v.folders.add("Stars/Anatomy");
+    w.v.files.set("Stars/Stars - Overview.md", "---\nresearch-root: true\n---\n");
+    w.drop("Stars/paper+.pdf");
+    await w.pdfFlow.onFileEvent("Stars/paper+.pdf");
+    await w.queue.idle();
+    // While Mantle was still running, Core had already failed: its notice was shown and the folder still spun.
+    expect(snap).toHaveLength(1);
+    expect(snap[0].notices).toContain('Could not research "Core": bad request');
+    expect(snap[0].spin).toContain("Stars/Anatomy");
+    expect(w.notices.filter((n) => n.error)).toEqual([{ text: 'Could not research "Core": bad request', error: true }]);
+    expect(w.v.files.has("Stars/Anatomy/Mantle note 1.md")).toBe(true);
+    expect(w.spinners.at(-1)).toEqual([]);
+  });
+
   test("trigger -> 'Overview ready' notice once, five key point spinners while their jobs run, cleared at the end, one error notice for a failed key point", async () => {
     const w = world({ fail: { Gravity: new ApiError("bad request", 400) } });
     w.v.folders.add("Inbox");

@@ -99,7 +99,7 @@ describe("noticeFor: keypoint source", () => {
   const kp = { kind: "keypoint" as const, resumed: false };
   const kctx = { topic: "Key A" };
   test("failed -> error; neutral -> neutral; done and others -> null", () => {
-    expect(noticeFor("T/Key A", { kind: "failed", error: "boom" }, kp, kctx)).toEqual({ text: 'Could not research "Key A": boom', error: true });
+    expect(noticeFor("T/Key A/Key A.md", { kind: "failed", error: "boom" }, kp, kctx)).toEqual({ text: 'Could not research "Key A": boom', error: true });
     expect(noticeFor("T/Key A", { kind: "failed", error: CANCELLED_MESSAGE }, kp, kctx)).toEqual({ text: CANCELLED_MESSAGE, error: false });
     expect(noticeFor("T/Key A", { kind: "done", folders: 1, notes: 3 }, kp, kctx)).toBeNull();
     expect(noticeFor("T/Key A", { kind: "step", text: "x" }, kp, kctx)).toBeNull();
