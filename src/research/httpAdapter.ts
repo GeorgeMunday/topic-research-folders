@@ -22,3 +22,21 @@ export function makeHttp(requestUrl: RequestUrlFn): HttpFn {
     return { status: res.status, json, headers: res.headers };
   };
 }
+
+export type GetFn = (req: { url: string; method: "GET"; headers: Record<string, string> })
+  => Promise<{ status: number; json: any; headers: Record<string, string> }>;
+
+/** GET counterpart of makeHttp: same TypeError-on-transport-failure rule, message only. */
+export function makeGet(requestUrl: RequestUrlFn): GetFn {
+  return async (req) => {
+    let res: RequestUrlResult;
+    try {
+      res = await requestUrl({ url: req.url, method: req.method, headers: req.headers, body: "", throw: false });
+    } catch (e) {
+      throw new TypeError(e instanceof Error ? e.message : "Network request failed");
+    }
+    let json: any;
+    try { json = res.json; } catch { json = undefined; }
+    return { status: res.status, json, headers: res.headers };
+  };
+}

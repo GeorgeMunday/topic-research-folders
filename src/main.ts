@@ -6,7 +6,8 @@ import type { Job } from "./types";
 import { JobQueue } from "./jobs/queue";
 import { ClaudeClient } from "./research/claudeClient";
 import type { HttpFn } from "./research/claudeClient";
-import { makeHttp } from "./research/httpAdapter";
+import { makeGet, makeHttp } from "./research/httpAdapter";
+import { ModelCatalog } from "./models";
 import type { RequestUrlResult } from "./research/httpAdapter";
 import { VaultWriter } from "./vault/writer";
 import type { VaultLike } from "./vault/writer";
@@ -26,7 +27,7 @@ function localDate(): string {
 }
 
 export default class TopicResearchFoldersPlugin extends Plugin {
-  private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {} };
+  private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {}, modelCache: null };
   private saveChain: Promise<void> = Promise.resolve();
   private statusEl: HTMLElement | null = null;
   private stopFns: Array<() => void> = [];
@@ -181,7 +182,16 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       },
     });
 
-    this.addSettingTab(new SettingsTab(this.app, this, { settings, save: () => this.persist() }));
+    const catalog = new ModelCatalog({
+      get: makeGet((p) => requestUrl(p) as unknown as Promise<RequestUrlResult>),
+      apiKey: () => settings().apiKey,
+      cache: () => this.data.modelCache,
+      saveCache: async (c) => { this.data.modelCache = c; await this.persist(); },
+      now: Date.now,
+      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimer: (id) => window.clearTimeout(id),
+    });
+    this.addSettingTab(new SettingsTab(this.app, this, { settings, save: () => this.persist(), catalog }));
 
     this.statusEl = this.addStatusBarItem();
     this.statusEl.setText("");

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { makeHttp } from "../src/research/httpAdapter";
+import { makeGet, makeHttp } from "../src/research/httpAdapter";
 import { isRetryable } from "../src/jobs/backoff";
 
 const req = { url: "https://x/y", method: "POST" as const, headers: { "x-api-key": "sk-secret" }, body: '{"secret":"body"}' };
@@ -31,5 +31,30 @@ describe("makeHttp", () => {
   test("non-JSON body (json getter throws) yields json undefined", async () => {
     const http = makeHttp((async () => ({ status: 502, get json() { throw new SyntaxError("bad json"); }, headers: {} })) as any);
     expect(await http(req)).toEqual({ status: 502, json: undefined, headers: {} });
+  });
+});
+
+describe("makeGet", () => {
+  const getReq = { url: "https://x/models", method: "GET" as const, headers: { "x-api-key": "test-key-123" } };
+
+  test("maps status, json and headers and passes throw:false", async () => {
+    let seen: any;
+    const get = makeGet((async (o: any) => { seen = o; return { status: 200, json: { a: 1 }, headers: { h: "v" } }; }) as any);
+    expect(await get(getReq)).toEqual({ status: 200, json: { a: 1 }, headers: { h: "v" } });
+    expect(seen).toMatchObject({ url: getReq.url, method: "GET", headers: getReq.headers, throw: false });
+  });
+
+  test("tolerates a throwing json getter", async () => {
+    const get = makeGet((async () => ({ status: 502, get json() { throw new SyntaxError("bad json"); }, headers: {} })) as any);
+    expect(await get(getReq)).toEqual({ status: 502, json: undefined, headers: {} });
+  });
+
+  test("rejected request becomes a TypeError with message only (no headers or key)", async () => {
+    const get = makeGet((async () => { throw new Error("net::ERR_INTERNET_DISCONNECTED"); }) as any);
+    const err = await get(getReq).catch((e) => e);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe("net::ERR_INTERNET_DISCONNECTED");
+    expect(err.message).not.toContain("test-key-123");
+    expect(err.cause).toBeUndefined();
   });
 });

@@ -1,0 +1,303 @@
+import { describe, expect, test } from "vitest";
+import {
+  CACHE_TTL_MS, KEY_DEBOUNCE_MS, MAX_PAGES, ModelCatalog, fetchAllModels, isCacheFresh,
+  modelOptions, parseModelsPage, pickerView, sortModels,
+} from "../src/models";
+import type { CatalogDeps, ModelCache, ModelInfo } from "../src/models";
+import { ApiError } from "../src/jobs/queue";
+
+const KEY = "test-key-123";
+const m = (id: string, over: Partial<ModelInfo> = {}): ModelInfo =>
+  ({ id, display_name: id.toUpperCase(), lifecycle: "active", created_at: "2026-01-01T00:00:00Z", ...over });
+
+type Req = { url: string; method: "GET"; headers: Record<string, string> };
+function fakeGet(pages: any[] | ((req: Req, n: number) => any)) {
+  const calls: Req[] = [];
+  const get = async (req: Req) => {
+    calls.push(req);
+    return typeof pages === "function" ? pages(req, calls.length - 1) : pages[calls.length - 1];
+  };
+  return { get, calls };
+}
+const page = (ids: string[], hasMore = false, extra: any = {}) => ({
+  status: 200, headers: {},
+  json: { data: ids.map((id) => ({ id, display_name: id, created_at: "2026-01-01T00:00:00Z", type: "model" })),
+    has_more: hasMore, last_id: ids[ids.length - 1], ...extra },
+});
+
+describe("parseModelsPage", () => {
+  test("parseModelsPage maps fields, defaults lifecycle to active, skips items without an id", () => {
+    const r = parseModelsPage({
+      data: [
+        { id: "a", display_name: "A", created_at: "2026-02-01T00:00:00Z", lifecycle: "deprecated", deprecated_at: "x" },
+        { id: "b", display_name: "B", created_at: "2026-01-01T00:00:00Z" },
+        { display_name: "no id" },
+        { id: 5 },
+        null,
+        { id: "c", display_name: "C", created_at: "2026-01-01T00:00:00Z", lifecycle: "weird" },
+      ],
+      has_more: true, last_id: "c",
+    });
+    expect(r.models).toEqual([
+      { id: "a", display_name: "A", lifecycle: "deprecated", created_at: "2026-02-01T00:00:00Z" },
+      { id: "b", display_name: "B", lifecycle: "active", created_at: "2026-01-01T00:00:00Z" },
+      { id: "c", display_name: "C", lifecycle: "active", created_at: "2026-01-01T00:00:00Z" },
+    ]);
+    expect(r.hasMore).toBe(true);
+    expect(r.lastId).toBe("c");
+    expect(parseModelsPage(undefined)).toEqual({ models: [], hasMore: false, lastId: null });
+  });
+});
+
+describe("fetchAllModels", () => {
+  test("fetchAllModels sends the exact first request", async () => {
+    const { get, calls } = fakeGet([page(["a"])]);
+    await fetchAllModels(get, KEY);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://api.anthropic.com/v1/models?limit=100");
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].headers).toEqual({ "x-api-key": KEY, "anthropic-version": "2023-06-01" });
+  });
+
+  test("fetchAllModels follows has_more with after_id=<last_id> and merges pages without duplicate ids", async () => {
+    const { get, calls } = fakeGet([page(["a", "b"], true), page(["b", "c"], false)]);
+    const out = await fetchAllModels(get, KEY);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toBe("https://api.anthropic.com/v1/models?limit=100&after_id=b");
+    expect(out.map((x) => x.id)).toEqual(["a", "b", "c"]);
+  });
+
+  test("fetchAllModels stops after MAX_PAGES (10) even if has_more stays true", async () => {
+    expect(MAX_PAGES).toBe(10);
+    const { get, calls } = fakeGet((_r, n) => page([`m${n}`], true));
+    const out = await fetchAllModels(get, KEY);
+    expect(calls).toHaveLength(10);
+    expect(out).toHaveLength(10);
+  });
+
+  test("non-200 -> ApiError with the status and the API message; the key is not in the message", async () => {
+    const { get } = fakeGet([{ status: 401, headers: {}, json: { error: { message: "invalid x-api-key" } } }]);
+    const err = await fetchAllModels(get, KEY).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(401);
+    expect(err.message).toBe("invalid x-api-key");
+    expect(err.message).not.toContain(KEY);
+    const { get: g2 } = fakeGet([{ status: 500, headers: {}, json: undefined }]);
+    const e2 = await fetchAllModels(g2, KEY).catch((e) => e);
+    expect(e2).toBeInstanceOf(ApiError);
+    expect(e2.message).toBe("HTTP 500");
+  });
+
+  test("empty key throws before any request", async () => {
+    const { get, calls } = fakeGet([page(["a"])]);
+    await expect(fetchAllModels(get, "  ")).rejects.toThrow();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("sortModels / modelOptions", () => {
+  test("sortModels: active first, then newest created_at first; invalid dates last", () => {
+    const list = [
+      m("old", { created_at: "2025-01-01T00:00:00Z" }),
+      m("dep", { lifecycle: "deprecated", created_at: "2027-01-01T00:00:00Z" }),
+      m("bad", { created_at: "nonsense" }),
+      m("new", { created_at: "2026-06-01T00:00:00Z" }),
+      m("tie-b", { created_at: "2024-01-01T00:00:00Z" }),
+      m("tie-a", { created_at: "2024-01-01T00:00:00Z" }),
+    ];
+    expect(sortModels(list).map((x) => x.id)).toEqual(["new", "old", "tie-a", "tie-b", "bad", "dep"]);
+  });
+
+  test("modelOptions: label is display_name, ' (deprecated)' appended, retired models are not options", () => {
+    const r = modelOptions([
+      m("a", { display_name: "Model A" }),
+      m("d", { display_name: "Model D", lifecycle: "deprecated", created_at: "2020-01-01T00:00:00Z" }),
+      m("r", { display_name: "Model R", lifecycle: "retired" }),
+    ], "a");
+    expect(r.options).toEqual([{ value: "a", label: "Model A" }, { value: "d", label: "Model D (deprecated)" }]);
+    expect(r.selected).toBe("a");
+    expect(r.warning).toBeUndefined();
+  });
+
+  test("modelOptions: saved id missing -> extra '<id> (unavailable)' option, selected stays saved, warning says to pick another", () => {
+    const r = modelOptions([m("a"), m("r", { lifecycle: "retired" })], "r");
+    expect(r.options.map((o) => o.value)).toEqual(["a", "r"]);
+    expect(r.options[1].label).toBe("r (unavailable)");
+    expect(r.selected).toBe("r");
+    expect(r.warning).toMatch(/pick another model/i);
+    const r2 = modelOptions([m("a")], "gone");
+    expect(r2.selected).toBe("gone");
+    expect(r2.options).toContainEqual({ value: "gone", label: "gone (unavailable)" });
+  });
+
+  test("modelOptions: empty saved id -> claude-sonnet-5-5 if listed, else the first active model", () => {
+    const withDefault = modelOptions([m("zzz", { created_at: "2030-01-01T00:00:00Z" }), m("claude-sonnet-5-5")], "");
+    expect(withDefault.selected).toBe("claude-sonnet-5-5");
+    expect(withDefault.warning).toBeUndefined();
+    const without = modelOptions([m("old", { created_at: "2020-01-01T00:00:00Z" }), m("new", { created_at: "2030-01-01T00:00:00Z" })], "");
+    expect(without.selected).toBe("new");
+  });
+});
+
+describe("isCacheFresh", () => {
+  const now = Date.parse("2026-10-09T12:00:00Z");
+  const at = (h: number): ModelCache => ({ fetchedAt: new Date(now - h * 3_600_000).toISOString(), models: [] });
+  test("isCacheFresh: null false; 23h true; 25h false; unparsable or future fetchedAt false", () => {
+    expect(CACHE_TTL_MS).toBe(86_400_000);
+    expect(isCacheFresh(null, now)).toBe(false);
+    expect(isCacheFresh(at(23), now)).toBe(true);
+    expect(isCacheFresh(at(25), now)).toBe(false);
+    expect(isCacheFresh({ fetchedAt: "garbage", models: [] }, now)).toBe(false);
+    expect(isCacheFresh(at(-2), now)).toBe(false);
+  });
+});
+
+describe("ModelCatalog", () => {
+  const NOW = Date.parse("2026-10-09T12:00:00Z");
+  function setup(opts: { key?: string; cache?: ModelCache | null; pages?: any[] | ((r: Req, n: number) => any) } = {}) {
+    const { get, calls } = fakeGet(opts.pages ?? [page(["a", "b"])]);
+    const timers = new Map<number, { fn: () => void; ms: number }>();
+    let nextId = 1;
+    const saved: ModelCache[] = [];
+    const ctl = { key: opts.key ?? KEY, cache: opts.cache ?? null };
+    const deps: CatalogDeps = {
+      get, apiKey: () => ctl.key, cache: () => ctl.cache,
+      saveCache: async (c) => { saved.push(c); ctl.cache = c; },
+      now: () => NOW,
+      setTimer: (fn, ms) => { const id = nextId++; timers.set(id, { fn, ms }); return id; },
+      clearTimer: (id) => { timers.delete(id); },
+    };
+    const catalog = new ModelCatalog(deps);
+    return { catalog, calls, timers, saved, ctl };
+  }
+  const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+  const fresh = (): ModelCache => ({ fetchedAt: new Date(NOW - 3_600_000).toISOString(), models: [m("cached")] });
+  const stale = (): ModelCache => ({ fetchedAt: new Date(NOW - 30 * 3_600_000).toISOString(), models: [m("cached")] });
+
+  test("ensure(): no key -> nokey and no request; fresh cache -> ready and no request; stale cache -> one request", async () => {
+    const a = setup({ key: "" });
+    a.catalog.ensure();
+    await flush();
+    expect(a.catalog.state().status).toBe("nokey");
+    expect(a.calls).toHaveLength(0);
+
+    const b = setup({ cache: fresh() });
+    b.catalog.ensure();
+    await flush();
+    expect(b.catalog.state().status).toBe("ready");
+    expect(b.catalog.state().models.map((x) => x.id)).toEqual(["cached"]);
+    expect(b.calls).toHaveLength(0);
+
+    const c = setup({ cache: stale() });
+    c.catalog.ensure();
+    await flush();
+    expect(c.calls).toHaveLength(1);
+    expect(c.catalog.state().status).toBe("ready");
+    expect(c.catalog.state().models.map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  test("debounces key changes: 3 keyChanged() calls inside 800 ms -> one request, only after the timer fires", async () => {
+    expect(KEY_DEBOUNCE_MS).toBe(800);
+    const s = setup();
+    s.catalog.keyChanged(); s.catalog.keyChanged(); s.catalog.keyChanged();
+    await flush();
+    expect(s.calls).toHaveLength(0);
+    expect(s.timers.size).toBe(1);
+    expect([...s.timers.values()][0].ms).toBe(800);
+    [...s.timers.values()][0].fn();
+    await flush();
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("blank key -> nokey immediately and the pending timer is cleared", async () => {
+    const s = setup();
+    s.catalog.keyChanged();
+    expect(s.timers.size).toBe(1);
+    s.ctl.key = "";
+    s.catalog.keyChanged();
+    expect(s.catalog.state().status).toBe("nokey");
+    expect(s.timers.size).toBe(0);
+    expect(s.calls).toHaveLength(0);
+  });
+
+  test("ignores a stale response: refresh() twice, first resolves last -> state holds the second result", async () => {
+    const resolvers: Array<(v: any) => void> = [];
+    const saved: ModelCache[] = [];
+    const catalog = new ModelCatalog({
+      get: () => new Promise((res) => resolvers.push(res)),
+      apiKey: () => KEY, cache: () => null,
+      saveCache: async (c) => { saved.push(c); }, now: () => NOW,
+      setTimer: () => 1, clearTimer: () => {},
+    });
+    const p1 = catalog.refresh();
+    const p2 = catalog.refresh();
+    expect(catalog.state().status).toBe("loading");
+    resolvers[1](page(["second"]));
+    await p2;
+    resolvers[0](page(["first"]));
+    await p1;
+    expect(catalog.state().models.map((x) => x.id)).toEqual(["second"]);
+    expect(saved).toHaveLength(1);
+    expect(saved[0].models.map((x) => x.id)).toEqual(["second"]);
+  });
+
+  test("error keeps cached models: state.status 'error', models = cache, error message set; success saves cache with fetchedAt ISO", async () => {
+    const bad = setup({ cache: stale(), pages: [{ status: 500, headers: {}, json: { error: { message: "overloaded" } } }] });
+    const seen: string[] = [];
+    bad.catalog.subscribe((st) => seen.push(st.status));
+    await bad.catalog.refresh();
+    const st = bad.catalog.state();
+    expect(st.status).toBe("error");
+    expect(st.models.map((x) => x.id)).toEqual(["cached"]);
+    expect(st.error).toBe("overloaded");
+    expect(bad.saved).toHaveLength(0);
+    expect(seen).toEqual(["loading", "error"]);
+
+    const rej = setup({ pages: [{ status: 401, headers: {}, json: { error: { message: "invalid x-api-key" } } }] });
+    await rej.catalog.refresh();
+    expect(rej.catalog.state().error).toBe("The API key was rejected: invalid x-api-key");
+
+    const ok = setup();
+    await ok.catalog.refresh();
+    expect(ok.saved).toHaveLength(1);
+    expect(ok.saved[0].fetchedAt).toBe(new Date(NOW).toISOString());
+    expect(ok.saved[0].models.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(JSON.stringify(ok.saved)).not.toContain(KEY);
+  });
+
+  test("offline TypeError gives a readable error message", async () => {
+    const s = setup({ pages: () => { throw new TypeError("net::ERR_INTERNET_DISCONNECTED"); } });
+    await s.catalog.refresh();
+    expect(s.catalog.state().status).toBe("error");
+    expect(s.catalog.state().error).toBe("Could not reach the Anthropic API (offline?): net::ERR_INTERNET_DISCONNECTED");
+  });
+});
+
+describe("pickerView", () => {
+  test("pickerView: nokey -> disabled + hint 'Add your API key to load models'; loading -> disabled, spinning, single option 'Loading models…'; error -> enabled, error text, current model still selected; ready with missing saved model -> warning", () => {
+    const nokey = pickerView({ status: "nokey", models: [] }, "claude-sonnet-5-5");
+    expect(nokey.disabled).toBe(true);
+    expect(nokey.hint).toBe("Add your API key to load models");
+    expect(nokey.selected).toBe("claude-sonnet-5-5");
+
+    const loading = pickerView({ status: "loading", models: [m("a")] }, "a");
+    expect(loading.disabled).toBe(true);
+    expect(loading.spinning).toBe(true);
+    expect(loading.options).toEqual([{ value: "", label: "Loading models…" }]);
+
+    const err = pickerView({ status: "error", models: [m("a"), m("b")], error: "boom" }, "b");
+    expect(err.disabled).toBe(false);
+    expect(err.spinning).toBe(false);
+    expect(err.error).toBe("boom");
+    expect(err.selected).toBe("b");
+
+    const errMissing = pickerView({ status: "error", models: [m("a")], error: "boom" }, "gone");
+    expect(errMissing.selected).toBe("gone");
+    expect(errMissing.options).toContainEqual({ value: "gone", label: "gone (unavailable)" });
+
+    const ready = pickerView({ status: "ready", models: [m("a")] }, "gone");
+    expect(ready.disabled).toBe(false);
+    expect(ready.warning).toMatch(/pick another model/i);
+    expect(ready.selected).toBe("gone");
+  });
+});

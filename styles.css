@@ -1,0 +1,12 @@
+.trf-error { color: var(--text-error); }
+.trf-muted { color: var(--text-muted); }
+
+.trf-spin svg { animation: trf-rotate 1s linear infinite; }
+
+@keyframes trf-rotate {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trf-spin svg { animation: none; }
+}

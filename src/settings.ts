@@ -1,6 +1,8 @@
 import { PluginSettingTab, Setting } from "obsidian";
 import type { App, Plugin } from "obsidian";
 import type { Job } from "./types";
+import { modelOptions, pickerView } from "./models";
+import type { ModelCache, ModelCatalog, ModelInfo } from "./models";
 
 export interface Settings {
   apiKey: string;
@@ -22,6 +24,7 @@ export interface PluginData {
   settings: Settings;
   jobs: Job[];
   processedPdfs: Record<string, { path: string; date: string }>;
+  modelCache: ModelCache | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -82,6 +85,22 @@ function validProcessed(raw: unknown): PluginData["processedPdfs"] {
   return out;
 }
 
+function validModelCache(raw: unknown): ModelCache | null {
+  if (!isObj(raw) || typeof raw.fetchedAt !== "string" || !Array.isArray(raw.models)) return null;
+  const models: ModelInfo[] = [];
+  for (const m of raw.models) {
+    if (!isObj(m) || typeof m.id !== "string" || m.id === "") continue;
+    if (m.lifecycle !== "active" && m.lifecycle !== "deprecated" && m.lifecycle !== "retired") continue;
+    models.push({
+      id: m.id,
+      display_name: typeof m.display_name === "string" ? m.display_name : m.id,
+      lifecycle: m.lifecycle,
+      created_at: typeof m.created_at === "string" ? m.created_at : "",
+    });
+  }
+  return { fetchedAt: raw.fetchedAt, models };
+}
+
 /** Merge saved data over defaults, ignoring wrong-typed values and clamping numbers. */
 export function mergeData(raw: unknown): PluginData {
   const src = isObj(raw) ? raw : {};
@@ -105,12 +124,14 @@ export function mergeData(raw: unknown): PluginData {
     settings,
     jobs: Array.isArray(src.jobs) ? (src.jobs.filter(validJob) as Job[]) : [],
     processedPdfs: validProcessed(src.processedPdfs),
+    modelCache: validModelCache(src.modelCache),
   };
 }
 
 export interface SettingsHost {
   settings: () => Settings;
   save: () => Promise<void>;
+  catalog: ModelCatalog;
 }
 
 type SliderKey = "maxSubfolders" | "notesPerSubfolder" | "maxDepth" | "maxConcurrent" | "pdfPagesPerChunk" | "maxRetries";
@@ -120,7 +141,61 @@ export class SettingsTab extends PluginSettingTab {
     super(app, plugin);
   }
 
+  private unsubscribe: (() => void) | null = null;
+
+  hide(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+  }
+
+  /** Built once; catalog changes only repopulate the select and text lines (display() would steal focus). */
+  private buildModelRow(containerEl: HTMLElement, s: Settings, save: () => void): void {
+    const catalog = this.host.catalog;
+    const row = new Setting(containerEl).setName("Model");
+    const info = row.descEl.createDiv();
+    const hintEl = info.createDiv({ cls: "trf-muted" });
+    const errorEl = info.createDiv({ cls: "trf-error" });
+    const warnEl = info.createDiv({ cls: "trf-error" });
+    let select: HTMLSelectElement | null = null;
+    let setDisabled: (d: boolean) => void = () => {};
+    let spinEl: HTMLElement | null = null;
+
+    row.addDropdown((d) => {
+      select = d.selectEl;
+      setDisabled = (v) => { d.setDisabled(v); };
+      d.onChange((v) => { if (v) { s.model = v; save(); } });
+    });
+    row.addExtraButton((b) => {
+      b.setIcon("refresh-cw").setTooltip("Refresh models").onClick(() => { void catalog.refresh(); });
+      spinEl = b.extraSettingsEl;
+    });
+
+    const render = () => {
+      const state = catalog.state();
+      if (s.model === "" && state.status === "ready") {
+        const sel = modelOptions(state.models, "").selected;
+        if (sel) { s.model = sel; save(); }
+      }
+      const v = pickerView(state, s.model);
+      if (select) {
+        const sel: HTMLSelectElement = select;
+        sel.empty();
+        for (const o of v.options) sel.createEl("option", { value: o.value, text: o.label });
+        sel.value = v.selected;
+      }
+      setDisabled(v.disabled);
+      (spinEl as HTMLElement | null)?.toggleClass("trf-spin", v.spinning);
+      hintEl.setText(v.hint ?? "");
+      errorEl.setText(v.error ?? "");
+      warnEl.setText(v.warning ?? "");
+    };
+    this.unsubscribe = catalog.subscribe(render);
+    render();
+    catalog.ensure();
+  }
+
   display(): void {
+    this.hide();
     const { containerEl } = this;
     const s = this.host.settings();
     const save = () => { void this.host.save(); };
@@ -131,11 +206,10 @@ export class SettingsTab extends PluginSettingTab {
       .setDesc("Stored in this plugin's data.json inside your vault's plugin folder (not encrypted).")
       .addText((t) => {
         t.inputEl.type = "password";
-        t.setPlaceholder("sk-ant-...").setValue(s.apiKey).onChange((v) => { s.apiKey = v.trim(); save(); });
+        t.setPlaceholder("sk-ant-...").setValue(s.apiKey).onChange((v) => { s.apiKey = v.trim(); save(); this.host.catalog.keyChanged(); });
       });
 
-    new Setting(containerEl).setName("Model").addText((t) =>
-      t.setValue(s.model).onChange((v) => { if (v.trim()) { s.model = v.trim(); save(); } }));
+    this.buildModelRow(containerEl, s, save);
 
     new Setting(containerEl)
       .setName("Use web search")

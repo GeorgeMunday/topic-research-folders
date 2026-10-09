@@ -30,7 +30,7 @@ describe("settings", () => {
 
   test("null / junk raw data yields defaults", () => {
     for (const raw of [null, undefined, 5, "x", []]) {
-      expect(mergeData(raw)).toEqual({ settings: DEFAULT_SETTINGS, jobs: [], processedPdfs: {} });
+      expect(mergeData(raw)).toEqual({ settings: DEFAULT_SETTINGS, jobs: [], processedPdfs: {}, modelCache: null });
     }
   });
 
@@ -95,5 +95,30 @@ describe("mergeData entry validation", () => {
   test("drops malformed processedPdfs entries", () => {
     const d = mergeData({ processedPdfs: { ok: { path: "a", date: "d" }, a: { path: "a" }, b: { date: "d" }, c: null, d: "x" } });
     expect(d.processedPdfs).toEqual({ ok: { path: "a", date: "d" } });
+  });
+});
+
+describe("mergeData modelCache", () => {
+  const good = { id: "a", display_name: "A", lifecycle: "active", created_at: "2026-01-01T00:00:00Z" };
+  test("defaults to null", () => {
+    expect(mergeData({}).modelCache).toBeNull();
+    expect(mergeData({ modelCache: 5 }).modelCache).toBeNull();
+  });
+  test("keeps a valid cache", () => {
+    const cache = { fetchedAt: "2026-10-09T00:00:00.000Z", models: [good] };
+    expect(mergeData({ modelCache: cache }).modelCache).toEqual(cache);
+  });
+  test("drops an invalid cache", () => {
+    expect(mergeData({ modelCache: { fetchedAt: 5, models: [good] } }).modelCache).toBeNull();
+    expect(mergeData({ modelCache: { fetchedAt: "x", models: "nope" } }).modelCache).toBeNull();
+    expect(mergeData({ modelCache: { models: [good] } }).modelCache).toBeNull();
+  });
+  test("drops invalid items one by one", () => {
+    const cache = { fetchedAt: "2026-10-09T00:00:00.000Z", models: [
+      good, { display_name: "no id", lifecycle: "active", created_at: "x" },
+      { ...good, id: "weird", lifecycle: "unknown" }, null,
+      { ...good, id: "dep", lifecycle: "deprecated" },
+    ] };
+    expect(mergeData({ modelCache: cache }).modelCache?.models.map((x) => x.id)).toEqual(["a", "dep"]);
   });
 });
