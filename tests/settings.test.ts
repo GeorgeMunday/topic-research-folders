@@ -225,3 +225,19 @@ describe("mergeData model capabilities", () => {
     expect("pdf" in old).toBe(false);
   });
 });
+
+describe("mergeData keeps the subject of saved reviews and jobs", () => {
+  const outline = { topic: "Rust", summary: "s", subfolders: [{ name: "A", why: "w" }] };
+  test("a pending review keeps a valid subject and its language, and drops an unknown one", () => {
+    const keep = mergeData({ pendingReviews: [{ path: "R", outline: { ...outline, subject: "coding", codeLanguage: "rust" } }] });
+    expect(keep.pendingReviews[0].outline).toMatchObject({ subject: "coding", codeLanguage: "rust" });
+    const drop = mergeData({ pendingReviews: [{ path: "R", outline: { ...outline, subject: "cooking", codeLanguage: "rust" } }] });
+    expect(drop.pendingReviews[0].outline.subject).toBeUndefined();
+    expect(drop.pendingReviews[0].outline.codeLanguage).toBeUndefined();
+  });
+  test("a saved research job keeps a valid subject; an unknown subject drops the job", () => {
+    const job = { id: "research:R", kind: "research", path: "R", done: [], approved: [{ name: "A", why: "w" }], subject: "maths" };
+    expect(mergeData({ jobs: [job] }).jobs).toEqual([job]);
+    expect(mergeData({ jobs: [{ ...job, subject: "cooking" }] }).jobs).toEqual([]);
+  });
+});

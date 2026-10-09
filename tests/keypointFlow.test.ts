@@ -57,7 +57,7 @@ function unit(over: Partial<Settings> = {}) {
   const writer = new VaultWriter(v);
   const settings = { ...settingsBase, ...over };
   const notes = vi.fn(async (_t: string, _p: string[], s: SubfolderSuggestion, count: number) =>
-    Array.from({ length: count }, (_, i) => note(`${s.name} ${i + 1}`)));
+    ({ notes: Array.from({ length: count }, (_, i) => note(`${s.name} ${i + 1}`)), quiz: { questions: [], answers: [] } }));
   const client = { v: { notes } as any };
   const events: Ev[] = [];
   const errors: string[] = [];
@@ -84,6 +84,7 @@ describe("keypoint run", () => {
       "Stars paper", ["Space"],
       { name: "Fusion", why: "Fusion is central (p. 3) — from the PDF \"paper.pdf\" (A paper about stars.): The paper discusses Fusion." },
       4,
+      { context: expect.stringContaining("Path: Stars"), subject: "general", codeLanguage: undefined },
     ]);
     for (const i of [1, 2, 3, 4]) expect(u.v.files.get(`Stars/Fusion/Fusion ${i}.md`)).toContain('subtopic: "Fusion"');
     expect(u.v.files.get("Stars/Fusion/Fusion 1.md")).toContain('topic: "Stars paper"');
@@ -180,7 +181,7 @@ describe("keypoint run", () => {
       await new Promise((r) => setTimeout(r, 5));
       active--;
       if (s.name === "Gravity") throw new ApiError("bad request", 400);
-      return Array.from({ length: count }, (_, i) => note(`${s.name} ${i + 1}`));
+      return { notes: Array.from({ length: count }, (_, i) => note(`${s.name} ${i + 1}`)), quiz: { questions: [], answers: [] } };
     });
     const failedByQueue: Job[] = [];
     const q = new JobQueue(u.flow.run, {
@@ -284,7 +285,7 @@ function world(opts: { overview?: PdfOverview; fail?: Record<string, Error>; del
       opts.during?.[s.name]?.();
       const err = opts.fail?.[s.name];
       if (err) throw err;
-      return Array.from({ length: count }, (_, i) => note(`${s.name} note ${i + 1}`));
+      return { notes: Array.from({ length: count }, (_, i) => note(`${s.name} note ${i + 1}`)), quiz: { questions: [], answers: [] } };
     },
     async overviewPdf() { calls.overview++; return opts.overview ?? FIVE; },
     async mergeOverviews(): Promise<never> { throw new Error("single chunk: no merge"); },

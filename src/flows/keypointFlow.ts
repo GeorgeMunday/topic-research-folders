@@ -5,6 +5,8 @@ import type { VaultWriter } from "../vault/writer";
 import type { Runner } from "../jobs/queue";
 import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
+import { contextToPrompt } from "../context";
+import { resolveSubject } from "../subjects";
 import { CANCELLED_MESSAGE, nextRunId, type ProgressSink, type ProgressSource } from "../progress";
 
 export interface KeypointDeps {
@@ -62,14 +64,18 @@ export class KeypointFlow {
     // What the whole PDF is about (jobs saved before this field existed have none).
     const docSummary = (job.docSummary ?? "").trim();
     try {
-      const notes = await client.notes(
+      const fc = await writer.context(job.folder);
+      // The job's own subject (a PDF that differs from its root), else the nearest root's, read now so an edit wins.
+      const { subject, codeLanguage } = resolveSubject({ subject: job.subject, codeLanguage: job.codeLanguage }, fc.inherited);
+      const { notes, quiz } = await client.notes(
         job.topic,
         job.parents,
         { name: point.name, why: `${point.text} — from the PDF "${job.pdfName}"${docSummary ? ` (${docSummary})` : ""}: ${point.detail}` },
         settings().notesPerSubfolder,
+        { context: contextToPrompt(fc), subject, codeLanguage },
       );
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
-      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today());
+      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today(), quiz);
       emit({ kind: "done", folders: 1, notes: res.noteTitles.length });
     } catch (err) {
       if (isRetryable(err)) {

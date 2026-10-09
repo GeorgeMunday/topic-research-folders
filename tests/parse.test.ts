@@ -20,7 +20,7 @@ test("parseOutline defaults missing why to empty and trims", () => {
 test("parseNotes returns at most count notes", () => {
   const n = (t: string) => ({ title: t, summary: "s", keyPoints: ["k"], plainWords: "p" });
   const r = parseNotes(JSON.stringify({ notes: [n("a"), n("b"), n("c")] }), 2);
-  expect(r.map(x => x.title)).toEqual(["a", "b"]);
+  expect(r.notes.map(x => x.title)).toEqual(["a", "b"]);
 });
 test("parseNotes with zero valid notes throws", () => {
   expect(() => parseNotes('{"notes":[]}', 3)).toThrow(ParseError);
@@ -94,4 +94,11 @@ test("parsePdfOverview: a point text without a (p. N) tag gets one from the firs
   expect(r.keyPoints.map((p) => p.text)).toEqual([
     "No tag here (p. 12)", "No tag, no pages", "Already tagged (p. 3)", "Range tag (pp. 4-5)", "Numeric pages (p. 7)",
   ]);
+});
+
+test("extractJson: code fences inside a JSON string do not hide the real object", () => {
+  const inner = { questions: ["Print?\n```rust\nprintln!(\"{}\", 1);\n```"], answers: ["1"] };
+  expect(extractJson(JSON.stringify(inner))).toEqual(inner);
+  expect(extractJson("```json\n" + JSON.stringify(inner) + "\n```")).toEqual(inner);
+  expect(extractJson("Here you go:\n```json\n" + JSON.stringify(inner, null, 2) + "\n```\nDone.")).toEqual(inner);
 });

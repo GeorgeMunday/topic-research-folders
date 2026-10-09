@@ -7,6 +7,8 @@ import type { Runner } from "../jobs/queue";
 import { isRetryable } from "../jobs/backoff";
 import { isTriggerName, strippedPath } from "../trigger";
 import { uniqueName } from "../names";
+import { contextToPrompt } from "../context";
+import { resolveSubject } from "../subjects";
 
 export interface Notifier { info(msg: string): void; error(msg: string): void; }
 export interface ResearchDeps {
@@ -124,6 +126,10 @@ export class ResearchFlow {
       return;
     }
 
+    // What sits above and next to the topic: level, fit and duplicates for every prompt of this job.
+    const fc = await writer.context(job.path);
+    const folderContext = contextToPrompt(fc);
+
     // Cancel-all may have landed while the checks above were awaiting.
     if (signal.cancelled) { cancelled(); return; }
 
@@ -140,7 +146,7 @@ export class ResearchFlow {
         emit({ kind: "step", text: `Researching ${topic}…` });
       }
       try {
-        outline = await client.outline(topic, parents, s.maxSubfolders);
+        outline = await client.outline(topic, parents, s.maxSubfolders, folderContext);
       } catch (err) {
         if (!progress) throw err;
         if (isRetryable(err)) { retrying(err); throw err; }
@@ -154,6 +160,8 @@ export class ResearchFlow {
       emit({ kind: "outline", outline });
       return;
     }
+    // The outline's subject, else the nearest research root's (read live, so a user's edit of `subject:` wins).
+    const { subject, codeLanguage } = resolveSubject({ subject: job.subject, codeLanguage: job.codeLanguage }, fc.inherited);
     // "Resuming" only for a job that already wrote part of its folders (restored after a restart or a retry).
     emit({ kind: "step", text: job.done.length > 0 ? `Resuming ${topic}…` : `Researching ${topic}…` });
     let current: Job = job;
@@ -169,8 +177,8 @@ export class ResearchFlow {
       if (signal.cancelled) { cancelled(); return; }
       emit({ kind: "writing", index: i + 1, total: approved.length, name: sub.name });
       try {
-        const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder);
-        const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes }, today());
+        const { notes, quiz } = await client.notes(topic, parents, sub, s.notesPerSubfolder, { context: folderContext, subject, codeLanguage });
+        const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes, quiz }, today());
         results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
         written++;
         notesWritten += res.noteTitles.length;
@@ -196,7 +204,7 @@ export class ResearchFlow {
       return;
     }
 
-    const ov: Outline = { topic, summary: job.summary ?? "", subfolders: approved };
+    const ov: Outline = { topic, summary: job.summary ?? "", subfolders: approved, subject, ...(codeLanguage ? { codeLanguage } : {}) };
     const links = approved
       .filter((a) => results.has(a.name) || done.includes(a.name))
       .map((a) => results.get(a.name) ?? { subfolder: a.name, noteTitles: [] });

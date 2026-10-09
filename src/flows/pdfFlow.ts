@@ -9,6 +9,8 @@ import { CANCELLED_MESSAGE, nextRunId, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
 import { containerFor, pdfTriggerName } from "../pdf/trigger";
 import { uniqueName } from "../names";
+import { contextToPrompt } from "../context";
+import { resolveSubject } from "../subjects";
 import { ParseError } from "../research/parse";
 
 /** Marks pdf jobs restored from data.json: only those may be skipped because their content was processed before. */
@@ -221,6 +223,10 @@ export class PdfFlow {
         return e;
       };
 
+      // Inside a root the output joins that root's subfolders; otherwise it becomes a new folder next to the PDF.
+      const fc = await writer.context(plan.asRoot ? plan.container : `${plan.container}/${stem}`);
+      const folderContext = contextToPrompt(fc);
+
       let split: Awaited<ReturnType<typeof splitPdf>>;
       try {
         split = await splitPdf(bytes, settings().pdfPagesPerChunk, MAX_CHUNK_BYTES);
@@ -248,7 +254,7 @@ export class PdfFlow {
         if (cached) { results.push(cached); continue; }
         emit({ kind: "step", text: `Analysing ${file} (chunk ${i + 1}/${split.chunks.length})…` });
         try {
-          const r = await client.overviewPdf(stem, subfolders, chunk.base64, chunk.firstPage - 1);
+          const r = await client.overviewPdf(stem, subfolders, chunk.base64, chunk.firstPage - 1, folderContext);
           done.set(i, r);
           results.push(r);
         } catch (e) {
@@ -277,6 +283,21 @@ export class PdfFlow {
         }
       }
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
+      // A merged answer carries no subject: take the first chunk's.
+      const named = results.find((r) => r.subject);
+      if (!overview.subject && named) overview = { ...overview, subject: named.subject, ...(named.codeLanguage ? { codeLanguage: named.codeLanguage } : {}) };
+      // A new root records its subject in its Overview (key point jobs read it back from there, so an edit wins).
+      // Inside a root the PDF inherits the root's subject; only a clearly different one is kept on the jobs.
+      const own = { subject: overview.subject, codeLanguage: overview.codeLanguage };
+      let jobSubject: { subject?: typeof overview.subject; codeLanguage?: string } = {};
+      if (plan.asRoot) {
+        const r = resolveSubject(own, fc.inherited);
+        overview = { ...overview, subject: r.subject, ...(r.codeLanguage ? { codeLanguage: r.codeLanguage } : {}) };
+      } else if (own.subject) {
+        const r = resolveSubject(own, undefined);
+        const same = fc.inherited?.subject === r.subject && (r.subject !== "coding" || !r.codeLanguage || r.codeLanguage === fc.inherited.codeLanguage);
+        if (!same) jobSubject = { subject: r.subject, ...(r.codeLanguage ? { codeLanguage: r.codeLanguage } : {}) };
+      }
       let written: Awaited<ReturnType<typeof writer.writePdfOverview>>;
       try {
         written = await writer.writePdfOverview({
@@ -296,7 +317,7 @@ export class PdfFlow {
       for (const entry of written.entries) {
         const ok = enqueue({
           id: `keypoint:${entry.entryPath}`, kind: "keypoint", path: entry.entryPath, folder: entry.folder,
-          pdfName: file, topic: stem, parents: [...parents], docSummary: overview.summary, point: entry.point,
+          pdfName: file, topic: stem, parents: [...parents], docSummary: overview.summary, point: entry.point, ...jobSubject,
         });
         if (!ok) allQueued = false;
       }

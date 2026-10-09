@@ -1,12 +1,13 @@
 import type { KeyPoint, NoteContent, Outline, PdfOverview } from "../types";
+import { renderExtras } from "../subjects";
 
 // Collapse any run of whitespace (including line breaks) to one space, then trim.
-function oneLine(value: string): string {
+export function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
 // Wrap a value as a single-line double-quoted YAML scalar, escaping backslashes and quotes.
-function yamlString(value: string): string {
+export function yamlString(value: string): string {
   return `"${oneLine(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
@@ -21,7 +22,11 @@ function noteLink(title: string, folder?: string): string {
   return folder ? `[[${oneLine(folder)}/${t}|${t}]]` : `[[${t}]]`;
 }
 
-const QA_BLOCK = ["## Questions & Answers", "", "**Q:** ", "**A:** "];
+// Frontmatter lines that record what kind of topic a research root is; the user may edit `subject:`.
+function subjectLines(s: { subject?: string; codeLanguage?: string }): string[] {
+  if (!s.subject) return [];
+  return [`subject: ${s.subject}`, ...(s.subject === "coding" && s.codeLanguage ? [`codeLanguage: ${s.codeLanguage}`] : [])];
+}
 
 export function renderNote(
   note: NoteContent,
@@ -32,6 +37,7 @@ export function renderNote(
   if (ctx.pages) frontmatter.push(`pages: ${yamlString(ctx.pages)}`);
   frontmatter.push("tags: [research]", "---");
 
+  const extra = renderExtras(note.extras);
   const body = [
     `# ${oneLine(note.title)}`,
     "",
@@ -43,11 +49,10 @@ export function renderNote(
     "## In plain words",
     oneLine(note.plainWords),
     "",
+    ...(extra.length > 0 ? [...extra, ""] : []),
     "## My notes",
     "",
     "- ",
-    "",
-    ...QA_BLOCK,
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }
@@ -63,6 +68,7 @@ export function renderOverview(
     `topic: ${yamlString(outline.topic)}`,
     `created: ${date}`,
     "research-root: true",
+    ...subjectLines(outline),
     "tags: [research]",
     "---",
   ];
@@ -83,8 +89,6 @@ export function renderOverview(
     "## Subfolders",
     "",
     ...sections,
-    "",
-    ...QA_BLOCK,
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }
@@ -102,7 +106,7 @@ export function renderPdfOverview(
     `created: ${date}`,
     `source: ${yamlString(`[[${o.pdfName}]]`)}`,
   ];
-  if (o.asRoot) frontmatter.push("research-root: true");
+  if (o.asRoot) frontmatter.push("research-root: true", ...subjectLines(o.overview));
   frontmatter.push("tags: [research]", "---");
 
   // `|` and brackets would end the wikilink early.
@@ -123,8 +127,6 @@ export function renderPdfOverview(
     "## My notes",
     "",
     "- ",
-    "",
-    ...QA_BLOCK,
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }

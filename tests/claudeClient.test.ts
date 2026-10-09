@@ -33,12 +33,12 @@ test("research request: headers, model, web search", async () => {
   expect(body.tools[0]).toEqual({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
 });
 
-test("notes uses 8192 tokens and web search", async () => {
+test("notes uses 12288 tokens and web search", async () => {
   const { http, reqs } = fake(ok(NOTES));
   const n = await new ClaudeClient(http, cfg()).notes("T", [], { name: "A", why: "w" }, 3);
-  expect(n[0].title).toBe("N");
+  expect(n.notes[0].title).toBe("N");
   const body = JSON.parse(reqs[0].body);
-  expect(body.max_tokens).toBe(8192);
+  expect(body.max_tokens).toBe(12288);
   expect(body.tools).toHaveLength(1);
 });
 

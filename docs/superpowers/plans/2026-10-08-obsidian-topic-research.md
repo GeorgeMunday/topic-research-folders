@@ -1499,3 +1499,59 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 5. Do the same inside `Black holes/`: the overview lands in `Sources/`, matching subfolders receive their notes, others go to `From PDFs/`.
 6. Rename to `paper.pdf+` instead: same result. Rename a 300-page PDF: a confirm dialog asks once.
 7. Settings: pick a model from the list; models without PDF support are greyed with `(no PDF support)`; with an invalid key the red error shows and the list is kept.
+
+---
+
+# Tasks 20–23: folder context, subject notes, quiz files, README/icon (items E–H)
+
+> Same rules as before: test-first (capture the red run), `npm test` and `npm run build` pass before each section is committed, **one commit per section (E, F, G, H)**, fake HTTP only, pure logic never imports `obsidian`.
+
+## Decisions
+
+- `buildContext` is **async** (`Promise<FolderContext>`): reading an Overview's one-line summary needs `vault.read`. It takes a minimal `ContextVault` (`children`, `read`), which `VaultLike` already satisfies.
+- The context block is built once per job from the target path (topic folder; key-point folder; for a PDF the folder that receives its output). It is passed to the client as a ready-made prompt string, so the prompts stay pure string functions.
+- The 2,000-character cap applies to the whole block returned by `contextToPrompt` (fixed instruction included). Trimming drops the furthest ancestor first, then siblings.
+- Subject: the outline (and PDF overview) returns `subject` / `codeLanguage`; the nearest research-root ancestor's Overview frontmatter is read **live** (so a user's edit wins) and passed as a hint. Key-point jobs read the nearest root at run time; a PDF inside a root stores its own subject on the job only when it differs from the root's.
+- `NoteContent.extras` is optional. Invalid or missing extras never throw: if the extras object still has a usable general `example` the note falls back to `general`, otherwise the note has no extra section.
+- `ResearchClient.notes` now returns `NotesResult { notes, quiz }`. Questions and answers come from the **same call**; mismatched counts are trimmed to the shorter.
+- Answer links use the overview's unambiguous form `[[<folder path>/<Title>|<Title>]]` (renders as "Event horizon").
+- The quiz-flow wiring tests (`tests/quizFlow.test.ts`) were written after the writer/flow code, driven by the red `tests/quiz.test.ts`; `extractJson` now tries the whole reply first because code fences inside quiz strings (e.g. `println!("{}")`) were mistaken for the JSON wrapper.
+- Quiz files are written as a pair with a shared collision suffix (`... - Questions (2).md` / `... - Answers (2).md`) so the two links always match.
+
+## File Structure (Tasks 20–23)
+
+```
+  LICENSE                      NEW (MIT)
+  README.md                    rewritten (item 12)
+  assets/icon.svg              NEW (item 11)
+  src/
+    context.ts                 NEW pure: buildContext, contextToPrompt (item 1–3)
+    subjects.ts                NEW pure: SUBJECTS table (item 4–6)
+    quiz.ts                    NEW pure: renderQuestions, renderAnswers (item 8)
+    icon.ts                    NEW: ICON_ID, ICON_SVG_INNER
+    ui/ribbon.ts               NEW pure: ribbon/status menu items
+    types.ts                   Outline/PdfOverview + subject; NoteContent.extras; Quiz, NotesResult; Job + subject fields
+    research/prompts.ts        context block in every prompt; subject sections + quiz fields in notesPrompt
+    research/parse.ts          parseOutline subject; parseNotes -> NotesResult (extras + quiz)
+    vault/noteTemplate.ts      no Q&A block; subject section; subject frontmatter on Overview
+    vault/writer.ts            context(path); writes Questions/Answers files
+```
+
+### Task 20: Folder context (section E, items 1–3)
+- [x] Tests (`tests/context.test.ts`): plain folder chain; nested research roots (summary + subfolders); siblings listed without the target and with a "do not repeat" instruction; the 2,000-char trim keeps the nearest ancestors. Red, implement `src/context.ts`, wire into the research, PDF and key-point flows and all prompts, green. **Commit** `feat: give every research prompt the context of the folders above it`.
+
+### Task 21: Subject-specific notes (section F, items 4–6)
+- [x] Tests (`tests/subjects.test.ts`, extend parse/prompts/noteTemplate/flows): outline returns `subject`/`codeLanguage`, saved in Overview frontmatter, inherited by nested topics and PDFs, user edit wins; each subject renders its section between "In plain words" and "My notes"; code blocks carry the language tag; missing/invalid `extras` falls back without crashing. **Commit** `feat: subject-specific sections in notes`.
+
+### Task 22: Questions and Answers files (section G, items 7–9)
+- [x] Tests: no `## Questions & Answers` in any template (Task 3 snapshots updated); `<Subfolder> - Questions.md` / `- Answers.md` content; same API call; mismatch trimmed; coding questions carry code blocks. **Commit** `feat: separate Questions and Answers files per subfolder`.
+
+### Task 23: README, icon, description (section H, items 10–12)
+- [x] Tests: manifest name/description (≤250 chars, ends with a period); icon.svg uses `currentColor`, `viewBox="0 0 100 100"`, no external references, and matches `ICON_SVG_INNER`; ribbon menu has the three items; README sections in the requested order; LICENSE is MIT. **Commit** `feat: README, icon, ribbon button and manifest description`.
+
+## Manual check (after Task 23)
+
+1. `Programming/Rust/Ownership+`: notes include Rust code blocks and the level matches the parent folders; each subfolder has `<Subfolder> - Questions.md` and `- Answers.md`; notes have no Q&A section.
+2. `History/World War 2+`: notes have Timeline and Key people.
+3. The icon appears in the ribbon and the status bar.
+4. The README renders cleanly on GitHub.

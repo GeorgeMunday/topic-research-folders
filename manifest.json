@@ -3,7 +3,8 @@
   "name": "Topic Research Folders",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Create a folder ending in a trigger suffix and get an AI-researched subfolder outline and notes.",
-  "author": "georg",
+  "description": "Add + to a folder or PDF name to research it into subfolders of easy-to-read notes, with code examples and quiz files.",
+  "author": "George Munday",
+  "authorUrl": "https://github.com/GeorgeMunday",
   "isDesktopOnly": false
 }
