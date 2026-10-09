@@ -159,9 +159,11 @@ export class VaultWriter {
     outline: Outline,
     links: { subfolder: string; noteTitles: string[]; folder?: string }[],
     date: string,
+    /** File name stem; defaults to the outline's topic. Keeps the file named after the folder when the topic is a resolved one. */
+    stem?: string,
   ): Promise<string> {
     await this.ensureFolder(parent);
-    const base = `${sanitiseName(outline.topic)} - Overview`;
+    const base = `${sanitiseName(stem ?? outline.topic)} - Overview`;
     const name = uniqueName(base, (c) => this.taken(parent, `${c}.md`));
     const path = join(parent, `${name}.md`);
     await this.vault.createFile(path, renderOverview(outline, links, date));

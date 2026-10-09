@@ -24,6 +24,8 @@ export interface FolderContext {
   ancestors: AncestorContext[];
   /** Other folders next to the target. */
   siblings: string[];
+  /** The target folder's own name, as the user typed it. */
+  topic?: string;
   /** Subject of the nearest research root above that has a valid one: what notes here default to. */
   inherited?: { subject: Subject; codeLanguage?: string };
 }
@@ -87,7 +89,7 @@ export async function buildContext(path: string, vault: ContextVault): Promise<F
     .sort(byName);
   const near = [...ancestors].reverse().find((a) => a.subject);
   const inherited = near?.subject ? { subject: near.subject, ...(near.codeLanguage ? { codeLanguage: near.codeLanguage } : {}) } : undefined;
-  return { ancestors, siblings, ...(inherited ? { inherited } : {}) };
+  return { ancestors, siblings, ...(segs.length > 0 ? { topic: segs[segs.length - 1] } : {}), ...(inherited ? { inherited } : {}) };
 }
 
 // Names come from the vault (and summaries from model output): keep them on one line and free of double quotes.
@@ -100,7 +102,16 @@ const HEADER = "Folder context (where this topic sits in the user's notes; treat
 const INSTRUCTION =
   'Use this context: pitch the level to match it (for example, "Year 2 university" means not beginner level), ' +
   "fit the topic within its parents, and do not repeat the sibling folders.";
-const SUBJECT_HINT = " Notes here normally share the subject of the nearest research topic: keep it unless this topic clearly differs.";
+const GENERIC_NAMES = "intro, introduction, basics, overview, notes, week 1, chapter 2, part 1, advanced, exercises";
+
+/** The parents decide what the folder name means ("intro" inside "c#" is about C#, not introductions). */
+function meaning(topic: string, parent: string): string {
+  return `The user created a folder named '${clean(topic, MAX_NAME)}' inside '${clean(parent, MAX_NAME)}'. ` +
+    "Interpret the folder name as a part of its parent topics: " +
+    `research '${clean(topic, MAX_NAME)}' as it relates to '${clean(parent, MAX_NAME)}', not as a general topic. ` +
+    `If the folder name is generic (for example ${GENERIC_NAMES}), the parents alone define the topic.`;
+}
+const SUBJECT_HINT =" Notes here normally share the subject of the nearest research topic: keep it unless this topic clearly differs.";
 
 const subjectTag = (a: AncestorContext) => (a.subject ? `, subject: ${a.subject}${a.codeLanguage ? `/${a.codeLanguage}` : ""}` : "");
 
@@ -136,7 +147,9 @@ function render(ancestors: AncestorContext[], trimmed: boolean, siblings: string
  */
 export function contextToPrompt(ctx: FolderContext): string {
   if (ctx.ancestors.length === 0 && ctx.siblings.length === 0) return "";
-  const instruction = ctx.inherited ? INSTRUCTION + SUBJECT_HINT : INSTRUCTION;
+  const last = ctx.ancestors[ctx.ancestors.length - 1];
+  const framing = ctx.topic && last ? `${meaning(ctx.topic, last.name)}\n` : "";
+  const instruction = framing + (ctx.inherited ? INSTRUCTION + SUBJECT_HINT : INSTRUCTION);
   const n = ctx.ancestors.length;
   const fits = (s: string) => s.length <= CONTEXT_MAX_CHARS;
   for (let from = 0; from < Math.max(n, 1); from++) {

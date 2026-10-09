@@ -141,8 +141,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
           this.statusTextEl.toggle(text !== "");
         },
         setSpinners: (paths) => spinner.set(paths),
-        reviewModal: (outline) => {
-          const m = new SuggestionModal(this.app, outline);
+        reviewModal: (outline, hooks) => {
+          const m = new SuggestionModal(this.app, outline, hooks);
           openModals.add(m);
           return m.choose().finally(() => openModals.delete(m));
         },
@@ -151,8 +151,10 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         startApproved: (path, approved, outline) =>
           queue.add({
             id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary,
+            ...(outline.resolvedTopic ? { resolvedTopic: outline.resolvedTopic } : {}),
             ...(outline.subject ? { subject: outline.subject } : {}), ...(outline.codeLanguage ? { codeLanguage: outline.codeLanguage } : {}),
           }),
+        resuggest: (path, topic) => researchFlow.resuggest(path, topic),
         pathExists: (path) => vault.getAbstractFileByPath(path) != null,
         // The queue side of "Cancel all" (command and status bar menu); the hub clears its own state after it.
         cancelAllJobs: () => {

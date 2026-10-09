@@ -144,8 +144,8 @@ describe("invalid or missing extras never crash", () => {
 describe("subject, language and inheritance", () => {
   test("normaliseLanguage keeps common language names and drops junk", () => {
     expect(normaliseLanguage(" Rust ")).toBe("rust");
-    expect(normaliseLanguage("C++")).toBe("c++");
-    expect(normaliseLanguage("C#")).toBe("c#");
+    expect(normaliseLanguage("C++")).toBe("cpp");
+    expect(normaliseLanguage("C#")).toBe("csharp");
     expect(normaliseLanguage("py thon!")).toBe("python");
     expect(normaliseLanguage("")).toBeUndefined();
     expect(normaliseLanguage(3)).toBeUndefined();

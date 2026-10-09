@@ -30,16 +30,20 @@ const SUBJECT_IDS = Object.keys(SUBJECTS).join(" | ");
 const SUBJECT_ASK = `Also decide "subject" (${SUBJECT_IDS}) from the topic and the folder context, for example "Ownership" under "Rust" is coding. If the context names a subject, keep it unless this topic clearly differs. For coding also give "codeLanguage" in lowercase (for example rust or python).`;
 const SUBJECT_FIELDS = `"subject": "string", "codeLanguage": "string (coding only)"`;
 
+/** The outline names the topic once the folder name is read within its parents. */
+const RESOLVED_ASK = `Also give "resolvedTopic": the full name of the topic once the folder name is read within its parent folders, for example "Introduction to C#" for a folder "intro" inside "c#". With no parent folders it is the topic itself. Base the subfolders on the resolved topic.`;
+
 export function outlinePrompt(topic: string, parents: string[], max: number, ctx = ""): string {
   return `You are a research assistant. Plan a folder outline for the topic: "${clean(topic)}".
 ${context(parents)}
 ${block(ctx)}Propose between 3 and ${max} non-overlapping subfolders that together cover the topic. Each "name" must be 5 words or fewer; "why" is one short sentence.
-${SUBJECT_ASK}
+${RESOLVED_ASK}
+${SUBJECT_ASK.replace("from the topic and", "from the resolved topic and")}
 
 ${RULES}
 
 JSON only, in this shape:
-{"topic": "string", "summary": "string", ${SUBJECT_FIELDS}, "subfolders": [{"name": "string", "why": "string"}]}`;
+{"topic": "string", "resolvedTopic": "string", "summary": "string", ${SUBJECT_FIELDS}, "subfolders": [{"name": "string", "why": "string"}]}`;
 }
 
 export function notesPrompt(topic: string, parents: string[], subfolder: SubfolderSuggestion, count: number, opts: NotesOptions = {}): string {

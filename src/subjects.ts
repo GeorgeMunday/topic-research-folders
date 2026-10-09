@@ -34,11 +34,14 @@ const rows = (v: unknown, keys: string[], max: number, required: number): Record
     return keys.slice(0, required).every((k) => row[k] !== "") ? [row] : [];
   }).slice(0, max);
 
-/** Lowercase language id such as `rust`, `c++` or `c#`; undefined when nothing usable is left. */
+const LANGUAGE_ALIASES: Record<string, string> = { "c#": "csharp", "c++": "cpp", "f#": "fsharp", "c-sharp": "csharp" };
+
+/** Lowercase language id such as `rust`, `cpp` or `csharp`; undefined when nothing usable is left. */
 export function normaliseLanguage(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
   const s = v.trim().toLowerCase().replace(/[^a-z0-9+#.-]/g, "").slice(0, 20);
-  return s === "" ? undefined : s;
+  // The id doubles as the code fence tag, and Obsidian highlights `csharp`, not `c#`.
+  return s === "" ? undefined : LANGUAGE_ALIASES[s] ?? s;
 }
 
 const MAX_CODE_LINES = 25;

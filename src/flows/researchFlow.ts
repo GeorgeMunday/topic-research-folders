@@ -82,6 +82,23 @@ export class ResearchFlow {
     if (queued) this.deps.progress?.(path, { kind: "step", text: "Waiting for other jobs…" }, { kind: "research", resumed: false });
   }
 
+  /**
+   * A fresh outline for `path` under an edited topic (the "Re-suggest" button): same folder context, no queue,
+   * no progress events. Rejects on failure; the caller shows the message.
+   */
+  async resuggest(path: string, topic: string): Promise<Outline> {
+    const { writer, settings } = this.deps;
+    const client = this.deps.client();
+    const s = settings();
+    if (!client || !s.apiKey.trim()) throw new Error("Add your Claude API key in the plugin settings before researching a topic.");
+    const edited = topic.trim() === "" ? baseName(path) : topic.trim();
+    const r = await writer.findResearchRoot(path);
+    const parents = r ? [...r.parents, r.topic] : [];
+    const fc = await writer.context(path);
+    const outline = await client.outline(edited, parents, s.maxSubfolders, contextToPrompt({ ...fc, topic: edited }));
+    return { ...outline, resolvedTopic: outline.resolvedTopic ?? edited };
+  }
+
   /** Forget a pending retry (the queue gave up or the job was cancelled) so the next run gets a fresh id. */
   endRun(path?: string): void {
     if (path === undefined) this.retryPending.clear(); else this.retryPending.delete(path);
@@ -166,6 +183,8 @@ export class ResearchFlow {
     emit({ kind: "step", text: job.done.length > 0 ? `Resuming ${topic}…` : `Researching ${topic}…` });
     let current: Job = job;
 
+    // The folder name read within its parents (e.g. "Introduction to C#" for `c#/intro`); it names the notes' topic.
+    const resolved = job.resolvedTopic?.trim() || topic;
     const done = [...job.done];
     // Titles are known only for subfolders written in this run; resumed (already done) ones link with no note titles.
     const results = new Map<string, { subfolder: string; noteTitles: string[]; folder?: string }>();
@@ -177,8 +196,8 @@ export class ResearchFlow {
       if (signal.cancelled) { cancelled(); return; }
       emit({ kind: "writing", index: i + 1, total: approved.length, name: sub.name });
       try {
-        const { notes, quiz } = await client.notes(topic, parents, sub, s.notesPerSubfolder, { context: folderContext, subject, codeLanguage });
-        const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes, quiz }, today());
+        const { notes, quiz } = await client.notes(resolved, parents, sub, s.notesPerSubfolder, { context: folderContext, subject, codeLanguage });
+        const res = await writer.writeSubfolder(job.path, resolved,{ subfolder: sub.name, notes, quiz }, today());
         results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
         written++;
         notesWritten += res.noteTitles.length;
@@ -204,12 +223,12 @@ export class ResearchFlow {
       return;
     }
 
-    const ov: Outline = { topic, summary: job.summary ?? "", subfolders: approved, subject, ...(codeLanguage ? { codeLanguage } : {}) };
+    const ov: Outline = { topic: resolved, summary: job.summary ?? "", subfolders: approved, subject, ...(codeLanguage ? { codeLanguage } : {}) };
     const links = approved
       .filter((a) => results.has(a.name) || done.includes(a.name))
       .map((a) => results.get(a.name) ?? { subfolder: a.name, noteTitles: [] });
     try {
-      await writer.writeOverview(job.path, ov, links, today());
+      await writer.writeOverview(job.path, ov, links, today(), topic);
     } catch (err) {
       retrying(err);
       if (!isRetryable(err)) finish({ kind: "failed", error: err instanceof Error ? err.message : String(err) });

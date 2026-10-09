@@ -93,7 +93,8 @@ export function parseOutline(text: string, max: number): Outline {
     if (name) subfolders.push({ name, why: str(s.why) });
   }
   if (subfolders.length === 0) throw new ParseError("Outline has no valid subfolders");
-  return { topic: str(data.topic), summary: str(data.summary), subfolders: subfolders.slice(0, max), ...parseSubject(data) };
+  const resolvedTopic = str(data.resolvedTopic);
+  return { topic: str(data.topic), ...(resolvedTopic ? { resolvedTopic } : {}), summary: str(data.summary), subfolders: subfolders.slice(0, max), ...parseSubject(data) };
 }
 
 const MAX_QUESTIONS = 8;

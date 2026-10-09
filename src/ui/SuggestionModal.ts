@@ -1,20 +1,28 @@
 import { Modal } from "obsidian";
 import type { App } from "obsidian";
 import type { Outline, SubfolderSuggestion } from "../types";
-import { selectApproved, type SuggestionRow } from "./selection";
+import type { ReviewHooks } from "./hub";
+import { modalTitle, selectApproved, type SuggestionRow } from "./selection";
+
+const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /**
  * Lets the user pick and rename the suggested subfolders. Opened only on demand (Review button or command).
  * `choose()` resolves once: the approved list on Create, null on Cancel, Esc, the close button or close().
+ * The topic field and "Re-suggest" ask for new suggestions under an edited topic without touching the folder.
  */
 export class SuggestionModal extends Modal {
   private resolve: ((v: SubfolderSuggestion[] | null) => void) | null = null;
   private settled = false;
   private rows: SuggestionRow[];
 
-  constructor(app: App, private outline: Outline) {
+  constructor(app: App, private outline: Outline, private hooks?: ReviewHooks) {
     super(app);
-    this.rows = outline.subfolders.map((s) => ({ suggestion: s, name: s.name, checked: true }));
+    this.rows = this.rowsOf(outline);
+  }
+
+  private rowsOf(o: Outline): SuggestionRow[] {
+    return o.subfolders.map((s) => ({ suggestion: s, name: s.name, checked: true }));
   }
 
   choose(): Promise<SubfolderSuggestion[] | null> {
@@ -34,10 +42,44 @@ export class SuggestionModal extends Modal {
   }
 
   onOpen(): void {
+    this.render("");
+  }
+
+  private render(message: string, topicDraft?: string): void {
     const { contentEl } = this;
     contentEl.empty();
-    this.titleEl.setText(`Research: ${this.outline.topic}`);
+    this.titleEl.setText(modalTitle(this.hooks ? baseName(this.hooks.path) : this.outline.topic, this.outline));
     if (this.outline.summary) contentEl.createEl("p", { text: this.outline.summary });
+
+    const resuggest = this.hooks?.resuggest;
+    if (resuggest) {
+      const topicRow = contentEl.createDiv({ cls: "setting-item" });
+      topicRow.createDiv({ cls: "setting-item-description", text: "Topic (edit it if the suggestions are about the wrong thing)" });
+      const topicInput = topicRow.createEl("input", { type: "text" });
+      topicInput.value = topicDraft ?? (this.outline.resolvedTopic || this.outline.topic);
+      topicInput.setAttribute("aria-label", "Topic");
+      const again = topicRow.createEl("button", { text: "Re-suggest" });
+      again.addEventListener("click", () => {
+        const topic = topicInput.value.trim();
+        if (topic === "") return;
+        again.disabled = true;
+        again.setText("Suggesting…");
+        resuggest(topic).then(
+          (o) => {
+            if (this.settled) return;
+            this.outline = o;
+            this.rows = this.rowsOf(o);
+            this.render("");
+          },
+          (e) => {
+            if (this.settled) return;
+            this.render(`Could not get new suggestions: ${e instanceof Error ? e.message : "unexpected error"}`, topic);
+          },
+        );
+      });
+      if (message) contentEl.createEl("p", { text: message, cls: "mod-warning" });
+    }
+
     const list = contentEl.createDiv();
     const buttons = contentEl.createDiv({ cls: "modal-button-container" });
     const createBtn = buttons.createEl("button", { text: "Create", cls: "mod-cta" });

@@ -1,5 +1,11 @@
-import type { SubfolderSuggestion } from "../types";
+import type { Outline, SubfolderSuggestion } from "../types";
 import { sanitiseName, uniqueName } from "../names";
+
+/** "Research: intro — Introduction to C#": the folder name, then what it was read as (when that differs). */
+export function modalTitle(folderName: string, outline: Outline): string {
+  const resolved = outline.resolvedTopic?.trim();
+  return resolved && resolved !== folderName ? `Research: ${folderName} — ${resolved}` : `Research: ${folderName}`;
+}
 
 export interface SuggestionRow { suggestion: SubfolderSuggestion; name: string; checked: boolean; }
 

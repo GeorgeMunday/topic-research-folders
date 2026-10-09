@@ -2,7 +2,8 @@ import type { Extras, Subject } from "./subjects";
 
 export interface SubfolderSuggestion { name: string; why: string; }
 /** `subject` / `codeLanguage`: what kind of topic this is (saved in the Overview frontmatter); absent when the model gave none. */
-export interface Outline { topic: string; summary: string; subfolders: SubfolderSuggestion[]; subject?: Subject; codeLanguage?: string; }
+/** `resolvedTopic`: the folder name read within its parent folders (e.g. "Introduction to C#" for `c#/intro`). */
+export interface Outline { topic: string; resolvedTopic?: string; summary: string; subfolders: SubfolderSuggestion[]; subject?: Subject; codeLanguage?: string; }
 /** `extras`: the subject-specific section (code examples, formulas, ...), absent when missing or invalid. */
 export interface NoteContent { title: string; summary: string; keyPoints: string[]; plainWords: string; extras?: Extras; }
 /** Quiz questions with matching answers (equal length); `note` is the title of the note an answer comes from. */
@@ -16,7 +17,7 @@ export interface KeyPoint { name: string; text: string; detail: string; pages: s
 export interface PdfOverview { summary: string; plainWords: string; keyPoints: KeyPoint[]; subject?: Subject; codeLanguage?: string; }
 /** `summary` carries the reviewed outline's summary into the overview written by the approved job. */
 export type Job =
-  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string; subject?: Subject; codeLanguage?: string }
+  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string; resolvedTopic?: string; subject?: Subject; codeLanguage?: string }
   /**
    * `triggeredAt`: ms epoch when the trigger queued it. `resume`: restored from data.json after a restart
    * (skipped only when its content finished processing at or after `triggeredAt`).

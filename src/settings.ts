@@ -98,6 +98,7 @@ function validJob(j: unknown): boolean {
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
   if (j.summary !== undefined && typeof j.summary !== "string") return false;
+  if (j.resolvedTopic !== undefined && typeof j.resolvedTopic !== "string") return false;
   if (!validSubject(j)) return false;
   if (j.approved === undefined) return true;
   return Array.isArray(j.approved) && j.approved.every((a) => isObj(a) && typeof a.name === "string");
@@ -113,6 +114,7 @@ function validPending(p: unknown): PendingReview | null {
     summary: o.summary,
     subfolders: (o.subfolders as Record<string, unknown>[]).map((s) => ({ name: s.name as string, why: s.why as string })),
   };
+  if (typeof o.resolvedTopic === "string" && o.resolvedTopic.trim() !== "") outline.resolvedTopic = o.resolvedTopic;
   if (isSubject(o.subject)) {
     outline.subject = o.subject;
     if (o.subject === "coding" && typeof o.codeLanguage === "string") outline.codeLanguage = o.codeLanguage;

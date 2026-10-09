@@ -9,12 +9,21 @@ export interface HubUi {
   notice(text: string, opts?: { error?: boolean; action?: { label: string; run: () => void } }): void;
   setStatus(text: string): void;                 // "" hides the item
   setSpinners(paths: string[]): void;
-  reviewModal(outline: Outline): Promise<SubfolderSuggestion[] | null>;   // resolves null when closed without Create
+  reviewModal(outline: Outline, hooks?: ReviewHooks): Promise<SubfolderSuggestion[] | null>;   // resolves null when closed without Create
+}
+
+/** What the review window needs besides the outline: the folder, and a way to ask for new suggestions. */
+export interface ReviewHooks {
+  path: string;
+  /** New suggestions for an edited topic; the hub keeps the result as the entry's outline (used by Create). */
+  resuggest?(topic: string): Promise<Outline>;
 }
 
 export interface HubActions {
   /** Enqueue the research job with `approved` (the outline is passed for its summary); false when the queue refused it. */
   startApproved(path: string, approved: SubfolderSuggestion[], outline: Outline): boolean;
+  /** Asks for a new outline of `path` under an edited topic (the review's Re-suggest button). */
+  resuggest?(path: string, topic: string): Promise<Outline>;
   /** False when the folder no longer exists in the vault. */
   pathExists(path: string): boolean;
   persistPending(list: PendingReview[]): void;
@@ -135,7 +144,22 @@ export class ProgressHub {
       if (busy(entry.path)) return Promise.resolve();
       if (!this.actions.pathExists(entry.path)) { this.forgetMissing(entry); return Promise.resolve(); }
       this.reviewing.add(entry);
-      result = this.ui.reviewModal(entry.outline);
+      const open = entry;
+      const resuggest = this.actions.resuggest;
+      result = this.ui.reviewModal(entry.outline, {
+        path: entry.path,
+        ...(resuggest ? {
+          resuggest: async (topic: string) => {
+            const outline = await resuggest.call(this.actions, open.path, topic);
+            // The entry may have been cancelled or dropped while the request ran.
+            if (!this.disposed && this.pendingList.includes(open)) {
+              open.outline = outline;
+              this.actions.persistPending(this.pending());
+            }
+            return outline;
+          },
+        } : {}),
+      });
     } catch (e) {
       if (entry) this.reviewing.delete(entry);
       problem(e);

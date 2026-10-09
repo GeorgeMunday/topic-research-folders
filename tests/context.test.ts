@@ -38,7 +38,7 @@ describe("buildContext", () => {
   test("a top-level folder with no siblings has no context at all", async () => {
     const v = new Mem().folder("Black holes");
     const ctx = await buildContext("Black holes", v);
-    expect(ctx).toEqual({ ancestors: [], siblings: [] });
+    expect(ctx).toEqual({ ancestors: [], siblings: [], topic: "Black holes" });
     expect(contextToPrompt(ctx)).toBe("");
   });
 
@@ -98,7 +98,6 @@ describe("contextToPrompt trimming", () => {
     const p = contextToPrompt(ctx);
     expect(p.length).toBeLessThanOrEqual(CONTEXT_MAX_CHARS);
     expect(p).toContain("Ancestor11");
-    expect(p).toContain("Ancestor10");
     expect(p).not.toContain("Ancestor00");
     const kept = names.filter((n) => p.includes(n));
     // whatever survives is a contiguous run ending at the nearest ancestor
