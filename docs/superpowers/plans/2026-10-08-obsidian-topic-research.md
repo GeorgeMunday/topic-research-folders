@@ -867,3 +867,299 @@ test("loadData merges partial saved data with defaults", () => { /* old data.jso
   6. Drop 10 PDFs and quit Obsidian mid-way. After a restart, the remaining jobs resume and none duplicate.
   7. Set the API key to blank. You get an error Notice and nothing is written.
 - [ ] **Step 9: Commit** with message `feat: settings, modals, status bar and vault wiring`.
+
+---
+
+# Addendum: Tasks 12–13 (model picker, loading feedback)
+
+> Tasks 1–11 are implemented. These two tasks extend them. Same rules as above: test-first, `npm test` and `npm run build` both pass before a task is done, no real API key in code, tests or commits, tests use fake HTTP functions only.
+
+## Global Constraints (Tasks 12–13)
+
+- **List Models API** (verified against the API docs on 2026-10-09):
+  - `GET https://api.anthropic.com/v1/models?limit=100`, headers `x-api-key` and `anthropic-version: 2023-06-01`, via Obsidian `requestUrl` with `throw: false`.
+  - Next page: same URL plus `&after_id=<last_id>` while `has_more` is true; stop after 10 pages.
+  - Model fields used: `id`, `display_name`, `created_at`, `lifecycle` (`"active" | "deprecated" | "retired"`, treated as `"active"` when absent), `deprecated_at`.
+  - The API omits `retired` models unless asked, so "saved model not in the list" is the normal way a retired model shows up.
+- **Model cache:** `modelCache: { fetchedAt: string; models: { id; display_name; lifecycle; created_at }[] } | null` in `data.json`, fresh for 24 hours. The API key is never stored in the cache and never appears in errors, logs or URLs.
+- **Loading feedback is driven only by `Progress` events** emitted by `ResearchFlow` and `PdfFlow` into an injected sink. The flows import nothing from `obsidian` and know nothing about modals, spinners or the status bar.
+- **Styling:** one `styles.css` at the repo root, using Obsidian CSS variables only (`--interactive-accent`, `--text-muted`, `--text-error`, `--background-modifier-border`, …). Every animation is disabled under `@media (prefers-reduced-motion: reduce)` and replaced by static "…" text. From Task 12 on, **three files** are deployed: `main.js`, `manifest.json`, `styles.css`.
+- **Startup stays silent** (Review Focus 1 above): resumed jobs never pop a modal open at startup.
+
+## Review Focus (Tasks 12–13)
+
+1. **Typing an API key character by character.** One fetch, 800 ms after the last keystroke. A response for an older key arriving after a newer request must be ignored. Pinned by Task 12 `debounces key changes` and `ignores a stale response`.
+2. **Offline, 401, or a 429 while loading models.** The settings tab never throws; the cached list (if any) stays usable and the current model stays selected. Pinned by Task 12 `error keeps cached models`.
+3. **The user closes the loading modal, then the outline arrives.** The suggestions must come back (the job cannot continue without an answer); closing the suggestion list itself still means cancel. Pinned by Task 13 Part C reducer tests and the manual check.
+4. **Resumed jobs after a restart.** No modal opens for them; the status bar and explorer spinner still show activity. Pinned by Task 13 `resumed research job emits no step that opens a modal`.
+5. **Explorer re-renders and many jobs at once.** The spinner class is re-applied after the explorer redraws, without a mutation loop, and cleared on finish, failure, cancel, queue-idle and unload. Pinned by Task 13 Part A tracker tests and the `navSelector` tests.
+
+## File Structure (Tasks 12–13)
+
+```
+  styles.css                   NEW, repo root (deployed)
+  src/
+    models.ts                  NEW pure: ModelInfo, parse/fetch/sort/options/cache freshness, ModelCatalog, pickerView
+    progress.ts                NEW pure: ProgressSink, CANCELLED_MESSAGE, OUTLINE_STAGE_MS, ProgressTracker
+    types.ts                   + Progress
+    research/httpAdapter.ts    + makeGet
+    jobs/queue.ts              + cancelJob
+    settings.ts                + modelCache, model dropdown row
+    flows/researchFlow.ts      + progress events, Approver gets the job path
+    flows/pdfFlow.ts           + progress events
+    ui/progressModel.ts        NEW pure: modal state reducer
+    ui/ResearchProgressModal.ts NEW (replaces SuggestionModal.ts; selection.ts stays)
+    ui/explorerSpinner.ts      NEW: pure navSelector + DOM glue
+  tests/models.test.ts, httpAdapter.test.ts (extend), settings.test.ts (extend), progress.test.ts,
+        progressModel.test.ts, explorerSpinner.test.ts, queue.test.ts (extend),
+        researchFlow.test.ts (extend), pdfFlow.test.ts (extend)
+```
+
+---
+
+### Task 12: Model picker dropdown (settings)
+
+**Files:**
+- Create: `src/models.ts`, `styles.css`
+- Modify: `src/research/httpAdapter.ts` (add `makeGet`), `src/settings.ts` (`PluginData.modelCache`, `mergeData`, dropdown row, `SettingsHost.catalog`), `src/main.ts` (build the catalog, pass it to the tab)
+- Test: `tests/models.test.ts`; extend `tests/httpAdapter.test.ts`, `tests/settings.test.ts`
+
+**Interfaces:**
+- Consumes: `ApiError` (`src/jobs/queue.ts`), `RequestUrlFn`/`RequestUrlResult` (`src/research/httpAdapter.ts`)
+- Produces:
+  ```ts
+  // src/research/httpAdapter.ts
+  export type GetFn = (req: { url: string; method: "GET"; headers: Record<string, string> })
+    => Promise<{ status: number; json: any; headers: Record<string, string> }>;
+  export function makeGet(requestUrl: RequestUrlFn): GetFn;   // transport failure -> TypeError(message only), same as makeHttp
+  // src/models.ts  (pure, no obsidian import)
+  export interface ModelInfo { id: string; display_name: string; lifecycle: "active" | "deprecated" | "retired"; created_at: string; }
+  export interface ModelCache { fetchedAt: string; models: ModelInfo[]; }
+  export const MAX_PAGES = 10, CACHE_TTL_MS = 86_400_000, KEY_DEBOUNCE_MS = 800, DEFAULT_MODEL = "claude-sonnet-5-5";
+  export function parseModelsPage(json: unknown): { models: ModelInfo[]; hasMore: boolean; lastId: string | null };
+  export function fetchAllModels(get: GetFn, apiKey: string): Promise<ModelInfo[]>;
+  export function sortModels(models: ModelInfo[]): ModelInfo[];
+  export function modelOptions(models: ModelInfo[], savedId: string):
+    { options: { value: string; label: string }[]; selected: string; warning?: string };
+  export function isCacheFresh(cache: ModelCache | null, now: number): boolean;
+  export type CatalogState = { status: "nokey" | "idle" | "loading" | "ready" | "error"; models: ModelInfo[]; error?: string };
+  export interface CatalogDeps { get: GetFn; apiKey: () => string; cache: () => ModelCache | null;
+    saveCache: (c: ModelCache) => Promise<void>; now: () => number;
+    setTimer: (fn: () => void, ms: number) => number; clearTimer: (id: number) => void; }
+  export class ModelCatalog {
+    constructor(deps: CatalogDeps);
+    state(): CatalogState;
+    subscribe(fn: (s: CatalogState) => void): () => void;
+    ensure(): void;                 // tab opened: nokey -> nokey; fresh cache -> ready (no request); else refresh()
+    refresh(): Promise<void>;       // always requests (button); newest call wins
+    keyChanged(): void;             // blank key -> nokey now and cancel any timer; else debounce KEY_DEBOUNCE_MS then refresh()
+  }
+  export interface PickerView { disabled: boolean; spinning: boolean; options: { value: string; label: string }[];
+    selected: string; hint?: string; error?: string; warning?: string; }
+  export function pickerView(state: CatalogState, savedId: string): PickerView;
+  ```
+  `PluginData` gains `modelCache: ModelCache | null` (default `null`). `SettingsHost` gains `catalog: ModelCatalog`.
+
+- [ ] **Step 1: Write the failing tests** in `tests/models.test.ts` (fake `GetFn` that records requests and returns scripted pages; fake timers are plain injected `setTimer`/`clearTimer`; fake key `"test-key-123"`).
+
+```ts
+test("parseModelsPage maps fields, defaults lifecycle to active, skips items without an id", () => {});
+test("fetchAllModels sends the exact first request", () => {
+  // url === "https://api.anthropic.com/v1/models?limit=100"; headers x-api-key "test-key-123", anthropic-version "2023-06-01"
+});
+test("fetchAllModels follows has_more with after_id=<last_id> and merges pages without duplicate ids", () => {});
+test("fetchAllModels stops after MAX_PAGES (10) even if has_more stays true", () => { /* get called exactly 10 times */ });
+test("non-200 -> ApiError with the status and the API message; the key is not in the message", () => {});
+test("empty key throws before any request", () => {});
+test("sortModels: active first, then newest created_at first; invalid dates last", () => {});
+test("modelOptions: label is display_name, ' (deprecated)' appended, retired models are not options", () => {});
+test("modelOptions: saved id missing -> extra '<id> (unavailable)' option, selected stays saved, warning says to pick another", () => {});
+test("modelOptions: empty saved id -> claude-sonnet-5-5 if listed, else the first active model", () => {});
+test("isCacheFresh: null false; 23h true; 25h false; unparsable or future fetchedAt false", () => {});
+test("ensure(): no key -> nokey and no request; fresh cache -> ready and no request; stale cache -> one request", () => {});
+test("debounces key changes: 3 keyChanged() calls inside 800 ms -> one request, only after the timer fires", () => {});
+test("blank key -> nokey immediately and the pending timer is cleared", () => {});
+test("ignores a stale response: refresh() twice, first resolves last -> state holds the second result", () => {});
+test("error keeps cached models: state.status 'error', models = cache, error message set; success saves cache with fetchedAt ISO", () => {});
+test("offline TypeError gives a readable error message", () => {});
+test("pickerView: nokey -> disabled + hint 'Add your API key to load models'; loading -> disabled, spinning, single option 'Loading models…'; error -> enabled, error text, current model still selected; ready with missing saved model -> warning", () => {});
+```
+  Extend `tests/httpAdapter.test.ts`: `makeGet` maps `{status,json,headers}`, tolerates a throwing `json`, and turns a rejected request into a `TypeError` whose message has no headers or key. Extend `tests/settings.test.ts`: `mergeData` keeps a valid `modelCache`, drops an invalid one (non-string `fetchedAt`, models missing `id`; unknown `lifecycle` values are dropped item by item), and defaults to `null`.
+
+- [ ] **Step 2: Run the tests.** `npx vitest run tests/models.test.ts tests/httpAdapter.test.ts tests/settings.test.ts`. Expected: FAIL. Capture the red output before implementing.
+- [ ] **Step 3: Implement `src/models.ts` and `makeGet`.**
+  - `fetchAllModels` throws `new ApiError(message, status)`, with the message taken from `json.error.message` when present, else `HTTP <status>`. A transport `TypeError` propagates unchanged.
+  - `ModelCatalog` keeps a generation counter: only the latest `refresh()` may change state or save the cache. During a refresh `models` keeps the cached list so an error can fall back to it. `saveCache` failures are ignored.
+  - Error text: `ApiError` -> its message (for 401 prefix `The API key was rejected: `); `TypeError` -> `Could not reach the Anthropic API (offline?): <message>`.
+  - `pickerView`: `nokey` -> `disabled: true`, `hint`; `loading` -> `disabled: true`, `spinning: true`, one option `Loading models…`; `error` -> enabled when models exist, `error` set, saved model stays selected (as an `(unavailable)` option only if absent); `ready` -> `modelOptions` and `warning`.
+- [ ] **Step 4: Implement the settings row.** In `SettingsTab.display()` replace the free-text Model field with: a dropdown, a "Refresh models" extra button (class `trf-spin` on its icon while `spinning`), a hint line, a red error line (`trf-error`), a warning line.
+  - Build the row once; on each catalog state change only repopulate the `<select>` and the text lines (never re-run `display()`, which would steal focus from the API key field).
+  - API key `onChange` saves the key and calls `catalog.keyChanged()`. Tab open calls `catalog.ensure()`. `hide()` unsubscribes.
+  - Choosing an option saves `settings.model`. When the saved model is empty and the catalog is ready, save `modelOptions(...).selected`.
+  - Create `styles.css` with `.trf-error { color: var(--text-error); }`, `.trf-muted { color: var(--text-muted); }` and `.trf-spin` (a rotating icon) plus the reduced-motion override (`animation: none`).
+- [ ] **Step 5: Wire `main.ts`.** `makeGet((p) => requestUrl(p) as ...)`; `new ModelCatalog({ get, apiKey: () => settings().apiKey, cache: () => this.data.modelCache, saveCache: async (c) => { this.data.modelCache = c; await this.persist(); }, now: Date.now, setTimer: (fn, ms) => window.setTimeout(fn, ms), clearTimer: (id) => window.clearTimeout(id) })`; pass it in the `SettingsTab` host.
+- [ ] **Step 6: Run the tests.** Same command as Step 2. Expected: PASS. Then `npm test` and `npm run build` (both pass).
+- [ ] **Step 7: Commit** with message `feat: model picker dropdown with cached model list`.
+
+---
+
+### Task 13: Loading feedback while generating folders
+
+Implemented in four parts, each with its own red/green run and its own `feat:` commit. A reviewer gates each part.
+
+**Files:**
+- Create: `src/progress.ts`, `src/ui/progressModel.ts`, `src/ui/ResearchProgressModal.ts`, `src/ui/explorerSpinner.ts`
+- Modify: `src/types.ts`, `src/jobs/queue.ts`, `src/flows/researchFlow.ts`, `src/flows/pdfFlow.ts`, `src/main.ts`, `styles.css`; delete `src/ui/SuggestionModal.ts` (importers of its `selectApproved` re-export switch to `selection.ts`)
+- Test: `tests/progress.test.ts`, `tests/progressModel.test.ts`, `tests/explorerSpinner.test.ts`; extend `tests/queue.test.ts`, `tests/researchFlow.test.ts`, `tests/pdfFlow.test.ts`
+
+**Interfaces:**
+- Produces:
+  ```ts
+  // src/types.ts
+  export type Progress =
+    | { kind: "step"; text: string }
+    | { kind: "outline"; outline: Outline }
+    | { kind: "writing"; index: number; total: number; name: string }
+    | { kind: "itemDone"; name: string; ok: boolean; error?: string }
+    | { kind: "done"; folders: number; notes: number }
+    | { kind: "failed"; error: string };
+  // src/progress.ts  (pure)
+  export interface ProgressSource { kind: "research" | "pdf"; resumed: boolean; }
+  export type ProgressSink = (path: string, e: Progress, src: ProgressSource) => void;
+  export const CANCELLED_MESSAGE = "Cancelled";   // a cancel is reported as { kind: "failed", error: CANCELLED_MESSAGE }
+  export const OUTLINE_STAGE_MS = 8000;
+  export class ProgressTracker {
+    handle(path: string, e: Progress, src: ProgressSource): void;  // step/outline/writing/itemDone activate the path; done/failed deactivate it
+    active(): string[];
+    statusSuffix(): string;           // latest text of the most recently updated active path, e.g. "Analysing paper.pdf (chunk 2/6)…"
+    onChange(fn: () => void): () => void;
+    clear(path?: string): void;
+  }
+  // src/jobs/queue.ts
+  JobQueue.cancelJob(kind: Job["kind"], path: string): boolean;   // removes a queued job or flags + wakes a running one; persists; true if found
+  // flows
+  ResearchDeps  += { progress?: ProgressSink; later?: (fn: () => void, ms: number) => () => void }   // later() returns a cancel function
+  PdfDeps       += { progress?: ProgressSink }
+  Approver.approve(outline: Outline, jobPath: string): Promise<SubfolderSuggestion[] | null>
+  // src/ui/progressModel.ts  (pure)
+  export type ModalState = { phase: "loading" | "choose" | "writing" | "done" | "failed" | "cancelled"; topic: string; step: string;
+    outline?: Outline; items: { name: string; status: "pending" | "working" | "ok" | "error"; error?: string }[];
+    index: number; total: number; current: string; folders: number; notes: number; error?: string };
+  export type ModalAction = Progress | { kind: "approved"; names: string[] };
+  export function initialState(topic: string): ModalState;
+  export function reduce(s: ModalState, a: ModalAction): ModalState;
+  export function progressFraction(s: ModalState): number;   // finished items / total, 0 when total is 0
+  // src/ui/explorerSpinner.ts
+  export function navSelector(path: string): string;   // `.nav-folder-title[data-path="…"], .nav-file-title[data-path="…"]`, escaping \ and "
+  export class ExplorerSpinner { constructor(doc: Document); set(paths: string[]): void; reattach(): void; stop(): void; }
+  ```
+
+**Event contract (what the flows emit; every test below pins one of these sequences):**
+- `ResearchFlow.run`, fresh job, web search on: `step "Searching the web…"`, then (only if the outline is still pending after `OUTLINE_STAGE_MS`, scheduled with `later`) `step "Suggesting folders…"`, `outline`, then per approved subfolder `writing {index (1-based among all approved), total, name}` followed by `itemDone`, finally `done {folders: written subfolders, notes: total notes}`. Web search off: the first step is `"Suggesting folders…"` and `later` is not used.
+- Resumed job (`job.approved` present): first event `step "Resuming research…"`, then `writing`/`itemDone` for the remaining subfolders only, then `done`. Its `ProgressSource.resumed` is `true`; fresh jobs send `false`.
+- Every exit emits exactly one terminal event: `done`, or `failed {error}`. That covers: outline error (non-retryable), approval cancelled (`CANCELLED_MESSAGE`), `signal.cancelled` seen after the outline, after approval, before a subfolder or before the overview (`CANCELLED_MESSAGE`), missing API key, nesting too deep, "already researched". A retryable error emits `step "Retrying after a temporary error…"` and rethrows (the queue retries from the checkpoint).
+- When `deps.progress` is provided the flow does not also call `notify` for these outcomes (the UI decides how to show them); without it the flow behaves exactly as before.
+- `PdfFlow.run`, once the processed/in-flight check has passed: `step "Preparing paper.pdf…"`, then before each API call `step "Analysing paper.pdf (chunk 2/6)…"`, then `done {folders: distinct subfolders written, notes}`. Every exit after the first step emits `failed {error}` (with `CANCELLED_MESSAGE` for a cancel); a retryable error emits `step "Retrying paper.pdf after a temporary error…"` and rethrows. The existing `notify` calls stay.
+
+#### Part A: types, queue cancel, tracker
+
+- [ ] **Step 1: Write the failing tests.**
+
+```ts
+// tests/queue.test.ts
+test("cancelJob removes a queued job and persists without it; returns true", async () => {});
+test("cancelJob flags a running job, wakes a sleeping retry, and the job is not retried or persisted", async () => {});
+test("cancelJob returns false for an unknown job", async () => {});
+// tests/progress.test.ts
+test("tracker activates a path on a step and deactivates it on done", () => {});
+test("tracker deactivates on failed, including CANCELLED_MESSAGE", () => {});
+test("statusSuffix is the latest step text of the most recently updated active path; empty when none", () => {});
+test("writing events render as 'Writing folder 2 of 5: Anatomy'", () => {});
+test("clear(path) and clear() remove paths and notify subscribers once", () => {});
+```
+- [ ] **Step 2: Run the tests** (`npx vitest run tests/queue.test.ts tests/progress.test.ts`). Expected: FAIL; capture the red output.
+- [ ] **Step 3: Implement** `Progress` in `src/types.ts`, `src/progress.ts`, `JobQueue.cancelJob`.
+- [ ] **Step 4: Run the tests.** Expected: PASS; then `npm test` and `npm run build`.
+- [ ] **Step 5: Commit** with message `feat: progress events, tracker and per-job cancel`.
+
+#### Part B: flows emit progress
+
+- [ ] **Step 1: Write the failing tests** (fake sink collecting `[path, event, source]`; fake `later` that stores the callback and returns a cancel spy; reuse the existing fakes).
+
+```ts
+// tests/researchFlow.test.ts
+test("successful run emits step, step, outline, writing/itemDone per subfolder, then done with folder and note counts", () => {});
+test("the second step only fires if the outline is still pending, and its timer is cancelled when the outline arrives", () => {});
+test("web search off: first step is 'Suggesting folders…' and later() is not used", () => {});
+test("failed outline (non-retryable) emits failed with the message and does not throw or notify", () => {});
+test("retryable outline error emits the retry step and rethrows", () => {});
+test("one failing subfolder emits itemDone ok:false with the reason, the rest continue, done counts only successes", () => {});
+test("approval cancelled emits failed CANCELLED_MESSAGE", () => {});
+test("cancel after the outline returns (user pressed Cancel) writes nothing and emits failed CANCELLED_MESSAGE", () => {});
+test("cancel mid-way stops at the next subfolder and emits failed CANCELLED_MESSAGE", () => {});
+test("resumed research job emits no step that opens a modal: source.resumed true, first event 'Resuming research…'", () => {});
+test("approver receives the job path as its second argument", () => {});
+test("without a sink the flow still notifies as before", () => {});
+// tests/pdfFlow.test.ts
+test("3-chunk pdf emits 'Preparing…', chunk 1/3, 2/3, 3/3 steps then done with folder and note counts", () => {});
+test("encrypted pdf emits failed after the preparing step; cancelled pdf emits failed CANCELLED_MESSAGE", () => {});
+test("already processed pdf emits nothing", () => {});
+test("retryable chunk error emits the retry step and rethrows", () => {});
+```
+- [ ] **Step 2: Run the tests** (`npx vitest run tests/researchFlow.test.ts tests/pdfFlow.test.ts`). Expected: the new tests FAIL, the old ones still pass; capture the red output.
+- [ ] **Step 3: Implement** the emissions per the event contract. Keep one private `finish(path, event)` helper per flow so terminal events cannot be forgotten, and add the `signal.cancelled` checks after the outline and after approval.
+- [ ] **Step 4: Run the tests.** Expected: PASS; then `npm test` and `npm run build`.
+- [ ] **Step 5: Commit** with message `feat: research and PDF flows emit progress events`.
+
+#### Part C: the progress modal
+
+- [ ] **Step 1: Write the failing tests** (`tests/progressModel.test.ts`).
+
+```ts
+test("initial state is loading with the topic and no items", () => {});
+test("step updates the step line while loading", () => {});
+test("outline moves loading -> choose and keeps the outline", () => {});
+test("approved moves choose -> writing with one pending item per name", () => {});
+test("writing marks the current item working and sets index, total and current name", () => {});
+test("itemDone marks ok or error (with reason)", () => {});
+test("done -> phase done with folders and notes (view text 'Done — 5 folders, 15 notes')", () => {});
+test("failed -> phase failed with the error; failed with CANCELLED_MESSAGE -> phase cancelled", () => {});
+test("progressFraction counts finished items over total and never exceeds 1", () => {});
+test("an outline arriving after the user closed the loading modal is still reduced (state is independent of visibility)", () => {});
+```
+- [ ] **Step 2: Run the tests.** Expected: FAIL; capture the red output.
+- [ ] **Step 3: Implement** `src/ui/progressModel.ts`, then `ResearchProgressModal` (replaces `SuggestionModal`, same `selectApproved` for names):
+  - Renders by phase. Loading: CSS spinner (`trf-spinner`), title `Researching <topic>…`, the step line, a **Cancel** button (`onCancel()` then close). Choose: the existing summary, checkbox list, editable names, `why` text, **Create** (disabled when none checked) and **Cancel**. Writing: progress bar (`trf-progress`, width from `progressFraction`), the line `Writing folder 2 of 5: Anatomy`, a list with `✓` / `✗ <reason>`. Done: `Done — N folders, M notes` and **Close**. Failed: the error with **Retry** (`onRetry()`) and **Close**. Cancelled: closes itself.
+  - Close behaviour: loading -> hides, the job keeps running, and `approve()` reopens the modal when the outline arrives; choose -> resolves `null` (cancel); writing/done/failed -> just closes.
+  - `approve(outline, jobPath)` resolves exactly once; it resolves `null` if the modal is closed in the choose phase or the plugin unloads.
+  - Append `.trf-spinner`, `.trf-progress`, `.trf-progress > div` to `styles.css` with `--interactive-accent` and `--background-modifier-border`; reduced-motion shows static text instead of rotating.
+- [ ] **Step 4: Run the tests.** Expected: PASS; then `npm test` and `npm run build`.
+- [ ] **Step 5: Commit** with message `feat: research progress modal with loading, progress and error states`.
+
+#### Part D: explorer spinner, status bar and wiring
+
+- [ ] **Step 1: Write the failing tests** (`tests/explorerSpinner.test.ts`).
+
+```ts
+test("navSelector targets folder and file nav titles by data-path", () => {
+  expect(navSelector("Black holes")).toBe('.nav-folder-title[data-path="Black holes"], .nav-file-title[data-path="Black holes"]');
+});
+test("navSelector escapes quotes and backslashes", () => {});
+```
+- [ ] **Step 2: Run the tests.** Expected: FAIL; capture the red output.
+- [ ] **Step 3: Implement** `ExplorerSpinner`: `set(paths)` adds/removes the class `trf-working` on matching nav items (missing elements are skipped silently); a `MutationObserver` with `{ childList: true, subtree: true }` (no attribute observation, so adding the class cannot retrigger it) on each `[data-type="file-explorer"]` container re-applies the class, throttled with `requestAnimationFrame`; `reattach()` re-finds the containers (called on workspace `layout-change`); `stop()` disconnects and removes every class. CSS: `.trf-working::after` is a small ring using `var(--interactive-accent)`; reduced-motion shows a static `…`.
+- [ ] **Step 4: Wire `main.ts`.**
+  - One `ProgressTracker`; its change callback updates the status bar to `Research: r/q` plus ` · <statusSuffix()>` when non-empty (hidden only when `r+q = 0` and the suffix is empty) and calls `spinner.set(tracker.active())`.
+  - The sink passed to both flows calls `tracker.handle(...)` first. For `source.kind === "research"`: a `step` for a path with no session and `resumed === false` creates and opens a `ResearchProgressModal` (wired so Cancel calls `queue.cancelJob("research", path)` and Retry calls `researchFlow.researchFolder(path)`); later events go to that session's `reduce`. The `Approver` looks up the session by `jobPath`. When a research `failed`, `done` or `itemDone ok:false` event arrives and no modal is open for that path, show a Notice (`Researched <topic>: N folders, M notes`, or the error). PDF jobs never open a modal.
+  - Safety nets: `queue` `onChange` with `r + q === 0` calls `tracker.clear()`; `onFailed` sends `failed` for the job's path; "Cancel all research jobs" calls `tracker.clear()` and fails any open modals with `CANCELLED_MESSAGE`; `workspace.on("layout-change")` calls `spinner.reattach()`; `onunload` calls `spinner.stop()`, `tracker.clear()` and closes the modals.
+  - `later: (fn, ms) => { const id = window.setTimeout(fn, ms); return () => window.clearTimeout(id); }`.
+- [ ] **Step 5: Verify.** `npm test` (all pass) and `npm run build` (no errors).
+- [ ] **Step 6: Manual check in a test vault.** Copy `main.js`, `manifest.json` **and `styles.css`** into the plugin folder, reload the plugin, then:
+  1. Settings -> the Model row: with no key it is disabled with the hint; with a valid key it loads real models, active ones first; "Refresh models" shows a spinner; a wrong key shows a red error and keeps the previous list; offline (turn Wi-Fi off, press Refresh) shows a red error and keeps the list; pick a model, reopen settings, it is still selected; typing a key shows a single request ~0.8 s after you stop.
+  2. Create `Black holes+`: the modal appears instantly with the spinner, "Researching Black holes…" and the step line; the folder shows a spinner in the file explorer; the suggestion list replaces the loading view; Cancel in the loading state closes it and the spinner disappears.
+  3. After Create: progress bar and "Writing folder 2 of 5: …" with ticks; close the modal early, the status bar keeps counting and the explorer spinner stays; the notes still land; at the end a Notice says how many folders and notes (the modal, if left open, shows "Done — N folders, M notes").
+  4. Force an error (use a bad key): the modal shows the message with Retry and Close.
+  5. Drop a PDF into a researched folder: the status bar shows "Analysing paper.pdf (chunk 1/N)…" and the PDF shows an explorer spinner until it finishes.
+  6. Collapse and expand the folder while it works: the spinner returns. Restart Obsidian mid-job: no modal opens; the status bar and spinner resume.
+  7. Turn on your OS "reduce motion" setting: spinners are replaced by static "…".
+- [ ] **Step 7: Commit** with message `feat: explorer spinner, status bar progress and modal wiring`.
