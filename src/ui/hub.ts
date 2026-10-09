@@ -126,8 +126,8 @@ export class ProgressHub {
           this.tracker.handle(target, { kind: "step", text: `Researching ${baseName(target)}…` }, { kind: "research", resumed: false });
           this.actions.startApproved(target, approved, entry.outline);
         } else {
-          this.tracker.clear(target);
-          this.gate.cancel(target);
+          // The outline run already ended when it was recorded (or was restored from data.json), so any run
+          // the gate or tracker holds for this path now is a newer one (e.g. a re-run): leave it alone.
           this.ui.notice("Cancelled");
         }
         this.refresh();

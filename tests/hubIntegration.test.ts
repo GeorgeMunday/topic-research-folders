@@ -155,3 +155,128 @@ test("review modal closed (null) -> nothing enqueued, pending removed", async ()
   expect(w.hub.pending()).toEqual([]);
   expect(w.persisted.at(-1)).toEqual([]);
 });
+
+// Item 5: closing the suggestion modal cancels the job (real flow + queue + hub).
+test("closing the suggestion modal cancels: no job, no writes, spinner cleared, neutral notice; a second review of the path does nothing", async () => {
+  const w = world();
+  await w.outline();
+  expect(w.spin()).toEqual([T]);
+  w.notices[0].action!.run();
+  w.reviews[0].resolve(null);
+  await flush();
+  await w.queue.idle();
+  expect(w.added).toEqual([]);
+  expect(w.calls.outline).toBe(1);
+  expect(w.calls.notes).toEqual([]);
+  expect([...w.v.files.keys()]).toEqual([]);
+  expect([...w.v.folders]).toEqual([T]);
+  expect(w.spin()).toEqual([]);
+  expect(w.status()).toBe("");
+  expect(w.notices.at(-1)).toEqual({ text: "Cancelled", error: false, action: undefined });
+  expect(w.notices.filter((n) => n.error)).toEqual([]);
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.persisted.at(-1)).toEqual([]);
+  // The old notice's Review button and the command both find nothing to review.
+  const before = w.notices.length;
+  w.notices[0].action!.run();
+  await w.hub.review(T);
+  await flush();
+  await w.queue.idle();
+  expect(w.reviews).toHaveLength(1);
+  expect(w.added).toEqual([]);
+  expect(w.notices.slice(before).map((n) => n.text)).toEqual(["No suggestions are waiting for review.", "No suggestions are waiting for review."]);
+  expect(w.spin()).toEqual([]);
+});
+
+test("Cancel all while the suggestion modal is open: its later Create is ignored (no job, no writes)", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  expect(w.reviews).toHaveLength(1);
+  // What the command does.
+  w.queue.cancelAll();
+  w.flow.endRun();
+  w.hub.cancelAll();
+  w.reviews[0].resolve([A]);
+  await p;
+  await w.queue.idle();
+  expect(w.added).toEqual([]);
+  expect(w.calls.notes).toEqual([]);
+  expect([...w.v.files.keys()]).toEqual([]);
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.spin()).toEqual([]);
+  expect(w.notices.at(-1)!.text).toBe("Cancelled all research jobs.");
+});
+
+test("re-running the folder while its review is open: the outdated modal's result is ignored and the new suggestions stay pending", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  await w.outline(); // a second outline run for the same folder replaces the pending suggestions
+  expect(w.calls.outline).toBe(2);
+  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
+  w.reviews[0].resolve([A]);
+  await p;
+  await w.queue.idle();
+  expect(w.added).toEqual([]);
+  expect(w.calls.notes).toEqual([]);
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.spin()).toEqual([T]);
+  // Closing the new review cancels it.
+  const q = w.hub.review(T);
+  expect(w.reviews).toHaveLength(2);
+  w.reviews[1].resolve(null);
+  await q;
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.spin()).toEqual([]);
+  expect(w.notices.at(-1)!.text).toBe("Cancelled");
+});
+
+test("closing an outdated modal while the re-run for the same folder is queued keeps its spinner", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const real = w.flow.run;
+  (w.flow as any).run = async (job: Job, signal: { cancelled: boolean }, cp: (j: Job) => Promise<void>) => {
+    if (job.path === "U") { await hold; return; }
+    return real(job, signal, cp);
+  };
+  w.v.folders.add("U");
+  w.queue.add({ id: "research:U", kind: "research", path: "U", done: [] });
+  await w.flow.researchFolder(T, { force: true });
+  w.reviews[0].resolve(null);
+  await p;
+  expect(w.notices.at(-1)!.text).toBe("Cancelled");
+  expect(w.spin()).toContain(T); // T's re-run is still waiting in the queue
+  release();
+  await w.queue.idle();
+  // The queued re-run still ran and produced fresh suggestions.
+  expect(w.calls.outline).toBe(2);
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.spin()).toEqual([T]);
+});
+
+test("closing an outdated modal while the re-run for the same folder is running: the re-run's suggestions still arrive", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const client = (w.flow as any).deps.client();
+  const realOutline = client.outline.bind(client);
+  client.outline = async (topic: string) => { await hold; return realOutline(topic); };
+  (w.flow as any).deps.client = () => client;
+  await w.flow.researchFolder(T, { force: true });
+  await flush(); // the re-run has started and is waiting for its outline
+  w.reviews[0].resolve(null);
+  await p;
+  expect(w.spin()).toEqual([T]);
+  release();
+  await w.queue.idle();
+  expect(w.calls.outline).toBe(2);
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
+  expect(w.spin()).toEqual([T]);
+});
