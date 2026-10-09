@@ -935,3 +935,54 @@ describe("fix round 1: a restored job is skipped only if it finished after it wa
     expect(c.enqueued).toEqual([{ id: "pdf:Topic/paper.pdf", kind: "pdf", path: "Topic/paper.pdf", triggeredAt: NOW }]);
   });
 });
+
+describe("fix round 1: triggers are handled one after another", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 15));
+
+  test("readBinary never overlaps for several simultaneous trigger events", async () => {
+    const c = setup();
+    c.slow.ms = 5;
+    const names = ["a", "b", "c", "d", "e"];
+    names.forEach((n, i) => drop(c, `Topic/${n}+.pdf`, ten[i]));
+    await Promise.all(names.map((n) => c.flow.onFileEvent(`Topic/${n}+.pdf`)));
+    expect(c.readCalls.total).toBe(5);
+    expect(c.readCalls.max).toBe(1);
+    expect(c.enqueued.map((j) => j.path)).toEqual(names.map((n) => `Topic/${n}.pdf`));
+  });
+
+  test("confirms are asked one at a time: the second only after the first is answered", async () => {
+    const c = setup({ confirmAbovePages: 5 });
+    const answers: Array<(v: boolean) => void> = [];
+    (c.flow as any).deps.confirm = { confirm: (m: string) => { c.confirms.push(m); return new Promise<boolean>((r) => answers.push(r)); } };
+    drop(c, "Topic/one+.pdf", ten[0]);
+    drop(c, "Topic/two+.pdf", ten[1]);
+    const both = Promise.all([c.flow.onFileEvent("Topic/one+.pdf"), c.flow.onFileEvent("Topic/two+.pdf")]);
+    await tick();
+    expect(c.confirms).toHaveLength(1);
+    expect(c.confirms[0]).toContain("one.pdf");
+    answers[0](true);
+    await tick();
+    expect(c.confirms).toHaveLength(2);
+    expect(c.confirms[1]).toContain("two.pdf");
+    answers[1](false);
+    await both;
+    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/one.pdf"]);
+  });
+
+  test("a throwing rename is reported once via the sink, queues nothing, and the next trigger still runs", async () => {
+    const c = setup();
+    const events: [string, Progress][] = [];
+    (c.flow as any).deps.progress = (p: string, e: Progress) => { events.push([p, e]); };
+    const real = (c.flow as any).deps.rename;
+    (c.flow as any).deps.rename = async (from: string, to: string) => {
+      if (from === "Topic/bad+.pdf") throw new Error("the file is locked");
+      return real(from, to);
+    };
+    drop(c, "Topic/bad+.pdf", pdf1);
+    drop(c, "Topic/ok+.pdf", pdf3);
+    await Promise.all([c.flow.onFileEvent("Topic/bad+.pdf"), c.flow.onFileEvent("Topic/ok+.pdf")]);
+    expect(events).toEqual([["Topic/bad+.pdf", { kind: "failed", error: "the file is locked" }]]);
+    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/ok.pdf"]);
+    expect([...c.errors, ...c.infos]).toEqual([]);
+  });
+});

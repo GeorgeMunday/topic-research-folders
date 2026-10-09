@@ -90,6 +90,8 @@ export class PdfFlow {
   // Paths produced by our own suffix-stripping rename whose clean name is itself a trigger name
   // (`C++.pdf` -> `C+.pdf`): the rename event for them is consumed once and ignored.
   private ownRenames = new Set<string>();
+  // Triggers run one after another (reads, renames and confirm modals never overlap); never rejects.
+  private triggerChain: Promise<void> = Promise.resolve();
   private lastRun = new Map<string, number>();
   private retryPending = new Set<string>();
   // Completed chunk results per file hash, kept across retry attempts so a retry does not resend them.
@@ -110,18 +112,18 @@ export class PdfFlow {
     const t = pdfTriggerName(baseName(path), this.deps.settings().triggerSuffix);
     if (!t || this.triggering.has(path)) return;
     this.triggering.add(path);
-    try {
-      await this.trigger(path, t.clean);
-    } catch (e) {
-      this.failAt(path, e instanceof Error ? e.message : "unexpected error");
-    } finally {
-      this.triggering.delete(path);
-    }
+    const clean = t.clean;
+    const next = this.triggerChain
+      .then(() => this.trigger(path, clean))
+      .catch((e) => this.failAt(path, e instanceof Error ? e.message : "unexpected error"))
+      .then(() => { this.triggering.delete(path); });
+    this.triggerChain = next;
+    return next;
   }
 
   private async trigger(path: string, clean: string): Promise<void> {
     const { readBinary, settings, writer, rename, enqueue, confirm } = this.deps;
-    let bytes: ArrayBuffer;
+    let bytes: ArrayBuffer | null;
     // Missing (e.g. a late duplicate event after the rename) or unreadable: nothing to do.
     try { bytes = await readBinary(path); } catch { return; }
     let finalPath = path;
@@ -144,6 +146,8 @@ export class PdfFlow {
     let pages: number;
     try {
       pages = (await inspectPdf(bytes)).pageCount;
+      // Only the page count is needed from here on; do not hold the file while a confirm modal waits.
+      bytes = null;
     } catch (e) {
       this.failAt(finalPath, `the PDF is ${e instanceof PdfError ? e.reason : "unreadable"}`);
       return;
