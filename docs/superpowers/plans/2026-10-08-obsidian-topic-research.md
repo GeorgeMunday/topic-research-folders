@@ -1584,7 +1584,7 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - [x] Tests: prompt asks simplest first, zero-padded prefixes follow the final order, collisions ` (2)`, setting off → no prefix, Study path list. **Commit** `feat: number folders in learning order`.
 
 ### Task 27: Sources (section 4)
-- [ ] Tests: citation parsing, dedupe, cap 5, omission, PDF note source line. **Commit** `feat: list real sources at the end of each note`.
+- [x] Tests: citation parsing, dedupe, cap 5, omission, PDF note source line. **Commit** `feat: list real sources at the end of each note`.
 
 ### Task 28: Undo last research (section 5)
 - [ ] Tests: only logged items removed, edited files kept, non-empty folders kept, suffix rename undone only if empty, log capped at 20. **Commit** `feat: undo last research`.

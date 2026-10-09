@@ -1,5 +1,6 @@
 import type { KeyPoint, NoteContent, Outline, PdfOverview } from "../types";
 import { renderExtras } from "../subjects";
+import { pageLabel } from "../research/sources";
 
 // Collapse any run of whitespace (including line breaks) to one space, then trim.
 export function oneLine(value: string): string {
@@ -53,8 +54,16 @@ export function renderNote(
     "## My notes",
     "",
     "- ",
+    ...sourcesSection(note, ctx),
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
+}
+
+// Last section: the PDF a note comes from, else the pages the web search returned; nothing when there are none.
+function sourcesSection(note: NoteContent, ctx: { source?: string; pages?: string }): string[] {
+  if (ctx.source) return ["", "## Sources", "", `- [[${ctx.source}]]${pageLabel(ctx.pages)}`];
+  const links = (note.sources ?? []).map((s) => `- [${oneLine(s.title)}](${s.url})`);
+  return links.length > 0 ? ["", "## Sources", "", ...links] : [];
 }
 
 export function renderOverview(

@@ -149,7 +149,9 @@ describe("no template has a Questions & Answers section any more", () => {
       expect(md).not.toContain("**Q:**");
     }
     // The templates that have My notes still end with it; the subfolder Overview ends with its list.
-    for (const md of outputs.filter((_, i) => i !== 2)) expect(md.endsWith("## My notes\n\n- \n")).toBe(true);
+    for (const md of outputs.filter((_, i) => i !== 2 && i !== 1)) expect(md.endsWith("## My notes\n\n- \n")).toBe(true);
+    // A PDF-derived note ends with its Sources section (the PDF), after My notes.
+    expect(outputs[1].endsWith("## My notes\n\n- \n\n## Sources\n\n- [[p.pdf]] (p. 1)\n")).toBe(true);
     expect(outputs[2].endsWith("## Study path\n\n")).toBe(true);
   });
 });

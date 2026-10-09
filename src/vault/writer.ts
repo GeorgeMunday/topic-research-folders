@@ -242,12 +242,14 @@ export class VaultWriter {
     notes: NoteContent[],
     date: string,
     quiz?: Quiz,
+    /** The PDF the notes come from: listed under Sources instead of web pages. */
+    from?: { pdf: string; pages?: string },
   ): Promise<{ noteTitles: string[] }> {
     folder = await this.ensureFolder(folder);
     const used = new Set<string>();
     const noteTitles: string[] = [];
     for (const note of notes) {
-      noteTitles.push(await this.writeUniqueNote(folder, note.title, used, () => renderNote(note, { topic, subtopic, date })));
+      noteTitles.push(await this.writeUniqueNote(folder, note.title, used, () => renderNote(note, { topic, subtopic, date, ...(from ? { source: from.pdf, ...(from.pages ? { pages: from.pages } : {}) } : {}) })));
     }
     await this.writeQuiz(folder, topic, subtopic, notes, noteTitles, quiz, date);
     return { noteTitles };

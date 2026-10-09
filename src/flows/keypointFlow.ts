@@ -75,7 +75,7 @@ export class KeypointFlow {
         { context: contextToPrompt(fc), subject, codeLanguage },
       );
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
-      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today(), quiz);
+      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today(), quiz, { pdf: job.pdfName, pages: point.pages });
       emit({ kind: "done", folders: 1, notes: res.noteTitles.length });
     } catch (err) {
       if (isRetryable(err)) {

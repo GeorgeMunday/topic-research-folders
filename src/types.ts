@@ -5,7 +5,8 @@ export interface SubfolderSuggestion { name: string; why: string; }
 /** `resolvedTopic`: the folder name read within its parent folders (e.g. "Introduction to C#" for `c#/intro`). */
 export interface Outline { topic: string; resolvedTopic?: string; summary: string; subfolders: SubfolderSuggestion[]; subject?: Subject; codeLanguage?: string; }
 /** `extras`: the subject-specific section (code examples, formulas, ...), absent when missing or invalid. */
-export interface NoteContent { title: string; summary: string; keyPoints: string[]; plainWords: string; extras?: Extras; }
+/** `sources`: pages the web search really returned for the call that wrote the note (absent when there were none). */
+export interface NoteContent { title: string; summary: string; keyPoints: string[]; plainWords: string; extras?: Extras; sources?: { title: string; url: string }[]; }
 /** Quiz questions with matching answers (equal length); `note` is the title of the note an answer comes from. */
 export interface Quiz { questions: string[]; answers: { text: string; note?: string }[]; }
 /** What one notes call returns: the notes and the quiz for their subfolder. */

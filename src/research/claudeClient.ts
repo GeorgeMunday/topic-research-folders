@@ -1,6 +1,7 @@
 import type { Outline, NotesResult, PdfOverview, SubfolderSuggestion } from "../types";
 import { outlinePrompt, notesPrompt, pdfOverviewPrompt, mergeOverviewsPrompt, type NotesOptions } from "./prompts";
 import { parseOutline, parseNotes, parsePdfOverview, ParseError } from "./parse";
+import { extractSources, type Source } from "./sources";
 import { ApiError } from "../jobs/queue";
 
 export interface ResearchClient {
@@ -41,7 +42,7 @@ export class ClaudeClient implements ResearchClient {
     private cfg: () => { apiKey: string; model: string; useWebSearch: boolean },
   ) {}
 
-  private async call(content: unknown, maxTokens: number, research: boolean): Promise<string> {
+  private async call(content: unknown, maxTokens: number, research: boolean): Promise<{ text: string; sources: Source[] }> {
     const { apiKey, model, useWebSearch } = this.cfg();
     if (!apiKey) throw new Error("Anthropic API key is not set. Add it in the plugin settings.");
     const body: Record<string, unknown> = {
@@ -67,15 +68,18 @@ export class ClaudeClient implements ResearchClient {
       );
     }
     if (res.json?.stop_reason === "max_tokens") throw new ParseError("Response truncated (max_tokens)");
-    return lastJsonText(res.json);
+    return { text: lastJsonText(res.json), sources: research && useWebSearch ? extractSources(res.json) : [] };
   }
 
   async outline(topic: string, parents: string[], max: number, context = ""): Promise<Outline> {
-    return parseOutline(await this.call(outlinePrompt(topic, parents, max, context), 4096, true), max);
+    return parseOutline((await this.call(outlinePrompt(topic, parents, max, context), 4096, true)).text, max);
   }
 
   async notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number, opts: NotesOptions = {}): Promise<NotesResult> {
-    return parseNotes(await this.call(notesPrompt(topic, parents, s, count, opts), 12288, true), count, opts.subject, opts.codeLanguage);
+    const { text, sources } = await this.call(notesPrompt(topic, parents, s, count, opts), 12288, true);
+    const r = parseNotes(text, count, opts.subject, opts.codeLanguage);
+    // Every note of the call shares the pages it found; with none, the notes stay without a Sources section.
+    return sources.length > 0 ? { ...r, notes: r.notes.map((n) => ({ ...n, sources })) } : r;
   }
 
   async overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number, context = ""): Promise<PdfOverview> {
@@ -83,12 +87,12 @@ export class ClaudeClient implements ResearchClient {
       { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
       { type: "text", text: pdfOverviewPrompt(pdfName, subfolders, pageOffset, context) },
     ];
-    return parsePdfOverview(await this.call(content, 8192, false), subfolders);
+    return parsePdfOverview((await this.call(content, 8192, false)).text, subfolders);
   }
 
   async mergeOverviews(pdfName: string, candidates: PdfOverview[]): Promise<PdfOverview> {
     // The candidates' subfolders were already matched to the existing names; only those may come back.
     const subfolders = [...new Set(candidates.flatMap((c) => c.keyPoints.flatMap((k) => (k.subfolder ? [k.subfolder] : []))))];
-    return parsePdfOverview(await this.call(mergeOverviewsPrompt(pdfName, candidates), 4096, false), subfolders);
+    return parsePdfOverview((await this.call(mergeOverviewsPrompt(pdfName, candidates), 4096, false)).text, subfolders);
   }
 }
