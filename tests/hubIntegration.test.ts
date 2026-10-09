@@ -424,3 +424,115 @@ test("status bar menu 'Cancel all' stops the running job in the real queue", asy
   expect(flowEvents.at(-1)).toBe("failed:Cancelled"); // the queue signalled the job, so it stopped instead of delivering an outline
   expect(flowEvents).not.toContain("outline");
 });
+
+// Item 14: cancelling or reusing restored state leaves nothing stale.
+const savedReview = (path = T) => [{ path, outline: { topic: path, summary: "saved", subfolders: [A, B] } }];
+
+test("item 14 (1): restored pending review, then Cancel all: spinner cleared, persisted list empty; re-triggering the folder is accepted and shows its normal notices", async () => {
+  const w = world();
+  w.hub.restorePending(savedReview(), []);
+  w.hub.cancelEverything();
+  await w.queue.idle();
+  expect(w.spin()).toEqual([]);
+  expect(w.status()).toBe("");
+  expect(w.persisted.at(-1)).toEqual([]);
+  expect(w.hub.pending()).toEqual([]);
+  const n = w.notices.length;
+  await w.outline();
+  expect(w.calls.outline).toBe(1);
+  expect(w.notices.slice(n).map((x) => x.text)).toEqual(["Suggestions ready for T"]);
+  expect(w.spin()).toEqual([T]);
+  const p = w.hub.review(T);
+  w.reviews[0].resolve([A]);
+  await p;
+  await w.queue.idle();
+  expect(w.notices.at(-1)!.text).toBe("Researched T: 1 folder, 1 note");
+  expect(w.spin()).toEqual([]);
+});
+
+test("item 14 (2): restored research job (approved) cancelled mid-run: no stale spinner or status; a later trigger on the path works", async () => {
+  const w = world();
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const client = (w.flow as any).deps.client();
+  const realNotes = client.notes.bind(client);
+  let held = true;
+  client.notes = async (...a: any[]) => { if (held) await hold; return realNotes(...a); };
+  (w.flow as any).deps.client = () => client;
+  const job: Job = { id: `research:${T}`, kind: "research", path: T, approved: [A, B], done: ["A"] };
+  w.v.folders.add("T/A");
+  w.hub.restorePending([], [job]);
+  w.queue.restore([job]);
+  await flush();
+  expect(w.spin()).toEqual([T]);
+  expect(w.status()).toBe("Writing folder 2 of 2: B");
+  w.hub.cancelEverything();
+  held = false;
+  release();
+  await w.queue.idle();
+  expect(w.spin()).toEqual([]);
+  expect(w.status()).toBe("");
+  expect(w.notices.map((x) => x.text)).toEqual(["Cancelled all research jobs."]);
+  expect(w.v.files.has("T/T - Overview.md")).toBe(false);
+  // A later trigger on the same path.
+  await w.outline();
+  expect(w.notices.at(-1)!.text).toBe("Suggestions ready for T");
+  expect(w.spin()).toEqual([T]);
+  expect(w.status()).toBe("Suggestions ready (1)");
+});
+
+test("item 14 (3): a restored job whose run fails at once shows exactly one notice (flow failure, and flow failure + queue give-up)", async () => {
+  // No API key: the flow ends the run with a failed event and returns.
+  const a = world();
+  (a.flow as any).deps.client = () => null;
+  const job: Job = { id: `research:${T}`, kind: "research", path: T, approved: [A], done: [] };
+  a.hub.restorePending([], [job]);
+  a.queue.restore([job]);
+  await a.queue.idle();
+  expect(a.notices.map((x) => x.text)).toEqual(["Research failed for T: Add your Claude API key in the plugin settings before researching a topic."]);
+  expect(a.spin()).toEqual([]);
+  // Overview write fails (non-retryable): the flow reports it and rethrows, the queue gives up -> still one notice.
+  const b = world();
+  (b.v as any).createFile = async (p: string, c: string) => { if (p.endsWith("Overview.md")) throw new Error("disk full"); b.v.files.set(p, c); };
+  b.hub.restorePending([], [job]);
+  b.queue.restore([job]);
+  await b.queue.idle();
+  expect(b.notices.map((x) => x.text)).toEqual(["Research failed for T: disk full"]);
+  expect(b.spin()).toEqual([]);
+  expect(b.status()).toBe("");
+});
+
+test("item 14 (4): a restored pending review still works after its folder was renamed", async () => {
+  const w = world();
+  w.hub.restorePending(savedReview(), []);
+  w.v.folders.delete(T);
+  w.v.folders.add("Renamed");
+  w.hub.renamePending(T, "Renamed");
+  expect(w.spin()).toEqual(["Renamed"]);
+  expect(w.persisted.at(-1)!.map((x) => x.path)).toEqual(["Renamed"]);
+  const p = w.hub.review();
+  expect(w.reviews).toHaveLength(1);
+  w.reviews[0].resolve([B]);
+  await p;
+  await w.queue.idle();
+  expect(w.v.files.has("Renamed/B/B note.md")).toBe(true);
+  expect(w.v.folders.has(T)).toBe(false);
+  expect(w.notices.at(-1)!.text).toBe("Researched Renamed: 1 folder, 1 note");
+  expect(w.spin()).toEqual([]);
+});
+
+test("item 14 (5): Create on a restored pending review runs the approved job and removes the entry from the persisted list", async () => {
+  const w = world();
+  w.hub.restorePending(savedReview(), []);
+  expect(w.persisted).toEqual([]); // restoring does not rewrite data.json
+  const p = w.hub.review(T);
+  w.reviews[0].resolve([A, B]);
+  await p;
+  expect(w.persisted.at(-1)).toEqual([]);
+  await w.queue.idle();
+  expect(w.added).toEqual([{ id: `research:${T}`, kind: "research", path: T, approved: [A, B], done: [], summary: "saved" }]);
+  expect(w.calls.notes).toEqual(["A", "B"]);
+  expect(w.calls.outline).toBe(0);
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.spin()).toEqual([]);
+});
