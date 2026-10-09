@@ -1578,7 +1578,7 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - [x] Tests (`tests/marks.test.ts`, hub tests updated): transitions, `iconFor`, done fade timer, reduced motion CSS, hub marks/no Notice, fallback status text. **Commit** `feat: show research state as an icon in the file explorer`.
 
 ### Task 25: Suggestion pop-up (section 2)
-- [ ] Tests (`tests/suggestionRows.test.ts`): full-width CSS, inside line, select all/none, add own row (empty ignored), move up/down/drag keeps order, keyboard handler. **Commit** `feat: pop-up shows context, select all, add and reorder`.
+- [x] Tests (`tests/suggestionRows.test.ts`): full-width CSS, inside line, select all/none, add own row (empty ignored), move up/down/drag keeps order, keyboard handler. **Commit** `feat: pop-up shows context, select all, add and reorder`.
 
 ### Task 26: Learning order (section 3)
 - [ ] Tests: prompt asks simplest first, zero-padded prefixes follow the final order, collisions ` (2)`, setting off → no prefix, Study path list. **Commit** `feat: number folders in learning order`.

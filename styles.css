@@ -67,3 +67,17 @@
   .trf-mark-ready { animation: none; }
   .trf-mark-done { animation: none; }
 }
+
+/* Suggestion pop-up */
+.trf-suggest-inside { color: var(--text-muted); font-size: var(--font-ui-smaller); margin: -4px 0 8px; }
+.trf-suggest-tools { display: flex; gap: 12px; margin: 4px 0; font-size: var(--font-ui-smaller); }
+.trf-suggest-tools a { cursor: pointer; }
+.trf-suggest-row { display: flex; align-items: flex-start; gap: 6px; padding: 6px 0; }
+.trf-suggest-row.trf-drag-over { border-top: 2px solid var(--interactive-accent); }
+.trf-suggest-body { flex: 1 1 auto; min-width: 0; }
+.trf-suggest-line { display: flex; align-items: center; gap: 6px; }
+.trf-suggest-name { flex: 1 1 auto; width: 100%; min-width: 0; }
+.trf-suggest-handle { cursor: grab; color: var(--text-muted); user-select: none; }
+.trf-suggest-move { display: flex; flex-direction: column; }
+.trf-suggest-move button { padding: 0 4px; line-height: 1; height: 16px; }
+.trf-suggest-add { margin: 6px 0; }
