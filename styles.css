@@ -25,13 +25,15 @@
   flex-shrink: 0;
 }
 
+/* Under reduced motion the ring becomes a static dot. */
 @media (prefers-reduced-motion: reduce) {
   .nav-folder-title.trf-working::after,
   .nav-file-title.trf-working::after {
+    content: "•";
     animation: none;
-    content: "…";
     border: none;
     width: auto;
     height: auto;
+    color: var(--interactive-accent);
   }
 }

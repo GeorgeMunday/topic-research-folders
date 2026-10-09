@@ -575,3 +575,44 @@ describe("fix round 1", () => {
     expect(h.hub.pending()).toEqual([]);
   });
 });
+
+describe("item 2: spinner paths", () => {
+  test("topic folder spins while researching and while awaiting review; a pdf file while analysed; a key point folder while its job runs; removed on done, failed, cancelled and queue idle (except pending reviews)", async () => {
+    const h = setup();
+    // Research: the topic folder from the first step, through the review, until the approved run ends.
+    const r1 = nextRunId();
+    h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(r1));
+    expect(h.spin()).toEqual([T]);
+    h.hub.sink(T, { kind: "outline", outline }, research(r1));
+    h.hub.onQueueChange(0, 0);
+    expect(h.spin()).toEqual([T]);
+    const p = h.hub.review(T);
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await p;
+    expect(h.spin()).toEqual([T]);
+    const r2 = nextRunId();
+    h.hub.sink(T, { kind: "writing", index: 1, total: 1, name: "Anatomy" }, research(r2, true));
+    h.hub.sink(T, { kind: "done", folders: 1, notes: 3 }, research(r2, true));
+    expect(h.spin()).toEqual([]);
+    // PDF stage 1: the pdf file itself; removed on failed.
+    const pdfPath = `${T}/paper.pdf`;
+    const pdf: ProgressSource = { kind: "pdf", resumed: false, runId: nextRunId() };
+    h.hub.sink(pdfPath, { kind: "step", text: "Analysing paper.pdf (chunk 1/2)…" }, pdf);
+    expect(h.spin()).toEqual([pdfPath]);
+    h.hub.sink(pdfPath, { kind: "failed", error: "bad" }, pdf);
+    expect(h.spin()).toEqual([]);
+    // Key point folders (Task 18 source kind): spin while the job runs; cancelled removes it.
+    const K = `${T}/Key point`;
+    const kp: ProgressSource = { kind: "keypoint", resumed: false, runId: nextRunId() };
+    h.hub.sink(K, { kind: "step", text: "Researching Key point…" }, kp);
+    expect(h.spin()).toEqual([K]);
+    h.hub.sink(K, { kind: "failed", error: CANCELLED_MESSAGE }, kp);
+    expect(h.spin()).toEqual([]);
+    // Queue idle clears running work but keeps a pending review.
+    h.hub.sink("A", { kind: "step", text: "x" }, research(nextRunId()));
+    h.hub.sink("B", { kind: "outline", outline }, research(nextRunId()));
+    expect(h.spin()).toEqual(["A", "B"]);
+    h.hub.onQueueChange(0, 0);
+    expect(h.spin()).toEqual(["B"]);
+  });
+});
