@@ -79,6 +79,7 @@ function world() {
       return ok;
     },
     pathExists: (p) => v.folders.has(p),
+    cancelAllJobs: () => { queue.cancelAll(); flow.endRun(); },
     persistPending: (l) => { persisted.push(l.map((x) => ({ ...x }))); },
   };
   const hub = new ProgressHub(ui, actions);
@@ -383,4 +384,43 @@ test("restart: a saved pending review is restored without a new outline request 
   expect(w.notices.at(-1)!.text).toBe("Researched T: 1 folder, 1 note");
   expect(w.hub.pending()).toEqual([]);
   expect(w.spin()).toEqual([]);
+});
+
+// Item 3.
+test("status after Create reads 'Researching T…' (never 'Resuming research…') and ends empty", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  w.reviews[0].resolve([A]);
+  await p;
+  await w.queue.idle();
+  const after = w.statuses.slice(w.statuses.indexOf("Suggestions ready (1)"));
+  expect(after).toContain("Researching T…");
+  expect(w.statuses.some((s) => s.startsWith("Resuming"))).toBe(false);
+  expect(w.status()).toBe("");
+});
+
+test("status bar menu 'Cancel all' stops the running job in the real queue", async () => {
+  const w = world();
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const client = (w.flow as any).deps.client();
+  const realOutline = client.outline.bind(client);
+  client.outline = async (topic: string) => { await hold; return realOutline(topic); };
+  const flowEvents: string[] = [];
+  const sink = (w.flow as any).deps.progress;
+  (w.flow as any).deps.progress = (p: string, e: any, s: any) => { flowEvents.push(e.kind === "failed" ? `failed:${e.error}` : e.kind); sink(p, e, s); };
+  (w.flow as any).deps.client = () => client;
+  await w.flow.researchFolder(T, { force: true });
+  await flush();
+  const cancel = w.hub.menuItems().find((m) => m.label === "Cancel all research jobs")!;
+  cancel.run();
+  release();
+  await w.queue.idle();
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.spin()).toEqual([]);
+  expect(w.status()).toBe("");
+  expect(w.notices.map((n) => n.text)).toEqual(["Cancelled all research jobs."]);
+  expect(flowEvents.at(-1)).toBe("failed:Cancelled"); // the queue signalled the job, so it stopped instead of delivering an outline
+  expect(flowEvents).not.toContain("outline");
 });

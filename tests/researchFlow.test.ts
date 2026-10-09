@@ -581,11 +581,11 @@ describe("progress events", () => {
     expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
   });
 
-  test("resumed research job emits no step that opens a modal: source.resumed true, first event 'Resuming research…'", async () => {
+  test("partly done (restored) research job: source.resumed true, first event 'Resuming T…'", async () => {
     const s = withSink();
     s.v.folders.add("T");
     await s.run(rjob("T", { approved: [A, B, C], done: ["A"] }));
-    expect(s.events[0][1]).toEqual({ kind: "step", text: "Resuming research…" });
+    expect(s.events[0][1]).toEqual({ kind: "step", text: "Resuming T…" });
     expect(s.events.every((e) => e[2].resumed === true)).toBe(true);
     expect(s.kinds().some((e) => e.kind === "outline")).toBe(false);
     expect(s.kinds().slice(1)).toEqual([
@@ -838,4 +838,14 @@ test("the approved job writes the reviewed outline's summary (job.summary) into 
   s.v.folders.add("T");
   await s.flow.run(rjob("T", { approved: [A], summary: "Why this topic matters" }), { cancelled: false }, async () => {});
   expect(s.v.files.get("T/T - Overview.md")).toContain("> Why this topic matters");
+});
+
+test("item 3: a freshly approved job (nothing done yet) starts with 'Researching <topic>…', not 'Resuming research…'", async () => {
+  const s = setup();
+  const events: Progress[] = [];
+  s.deps.progress = (_p, e) => { events.push(e); };
+  s.v.folders.add("Black holes");
+  await s.flow.run(rjob("Black holes", { approved: [A] }), { cancelled: false }, async () => {});
+  expect(events[0]).toEqual({ kind: "step", text: "Researching Black holes…" });
+  expect(events.some((e) => e.kind === "step" && e.text.startsWith("Resuming"))).toBe(false);
 });

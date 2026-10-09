@@ -18,6 +18,8 @@ export interface HubActions {
   /** False when the folder no longer exists in the vault. */
   pathExists(path: string): boolean;
   persistPending(list: PendingReview[]): void;
+  /** Stops the queued and running jobs (queue side of "Cancel all"); the hub then clears its own state. */
+  cancelAllJobs?(): void;
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -175,11 +177,17 @@ export class ProgressHub {
     this.ui.notice("Cancelled all research jobs.");
   }
 
-  menuItems(): { label: string; run: () => void }[] {
+  /** The user's "Cancel all": stop the jobs (injected queue side), then clear pending reviews, spinners and status. */
+  cancelEverything(): void {
+    if (this.disposed) return;
+    try { this.actions.cancelAllJobs?.(); } finally { this.cancelAll(); }
+  }
+
+  menuItems():{ label: string; run: () => void }[] {
     if (this.disposed) return [];
     const items: { label: string; run: () => void }[] = [];
     const busy = this.counts.running + this.counts.queued > 0 || this.tracker.active().length > 0;
-    if (busy || this.pendingList.length > 0) items.push({ label: "Cancel all research jobs", run: () => this.cancelAll() });
+    if (busy || this.pendingList.length > 0) items.push({ label: "Cancel all research jobs", run: () => this.cancelEverything() });
     if (this.pendingList.length > 0) items.push({ label: "Review pending suggestions", run: () => { void this.review(); } });
     return items;
   }

@@ -37,3 +37,5 @@
     color: var(--interactive-accent);
   }
 }
+
+.trf-status { cursor: pointer; }

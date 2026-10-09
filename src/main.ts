@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, requestUrl } from "obsidian";
+import { Menu, Notice, Plugin, TFile, TFolder, requestUrl } from "obsidian";
 import type { TAbstractFile } from "obsidian";
 import { DEFAULT_SETTINGS, SettingsTab, mergeData } from "./settings";
 import type { PluginData, Settings } from "./settings";
@@ -145,7 +145,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         setStatus: (text) => {
           if (!this.statusEl) return;
           this.statusEl.setText(text);
-          this.statusEl.style.display = text === "" ? "none" : "";
+          this.statusEl.toggle(text !== "");
         },
         setSpinners: (paths) => spinner.set(paths),
         reviewModal: (outline) => {
@@ -158,6 +158,13 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         startApproved: (path, approved, outline) =>
           queue.add({ id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary }),
         pathExists: (path) => vault.getAbstractFileByPath(path) != null,
+        // The queue side of "Cancel all" (command and status bar menu); the hub clears its own state after it.
+        cancelAllJobs: () => {
+          queue.cancelAll();
+          pdfFlow.dropCache();
+          researchFlow.endRun();
+          pdfFlow.endRun();
+        },
         persistPending: (list) => {
           this.data.pendingReviews = list;
           guard(this.persist());
@@ -254,7 +261,17 @@ export default class TopicResearchFoldersPlugin extends Plugin {
 
     this.statusEl = this.addStatusBarItem();
     this.statusEl.setText("");
-    this.statusEl.style.display = "none";
+    this.statusEl.addClass("trf-status");
+    this.statusEl.setAttribute("aria-label", "Research jobs");
+    this.statusEl.hide();
+    // Clicking the status text offers Cancel all / Review pending suggestions.
+    this.registerDomEvent(this.statusEl, "click", (evt) => {
+      const items = hub.menuItems();
+      if (items.length === 0) return;
+      const menu = new Menu();
+      for (const it of items) menu.addItem((m) => m.setTitle(it.label).onClick(() => { try { it.run(); } catch (e) { fail(e); } }));
+      menu.showAtMouseEvent(evt);
+    });
 
     const onCreated = (f: TAbstractFile) => {
       if (f instanceof TFolder) guard(researchFlow.onFolderEvent(f.path));
@@ -319,12 +336,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       name: "Cancel all research jobs",
       callback: () => {
         if (!needReady()) return;
-        queue.cancelAll();
-        pdfFlow.dropCache();
-        researchFlow.endRun();
-        pdfFlow.endRun();
-        // Clears pending reviews, spinners and status and shows the neutral notice.
-        hub.cancelAll();
+        // Same path as the status bar menu: stop the jobs, then clear reviews, spinners and status (neutral notice).
+        hub.cancelEverything();
       },
     });
 

@@ -156,7 +156,8 @@ export class ResearchFlow {
       emit({ kind: "outline", outline });
       return;
     }
-    emit({ kind: "step", text: "Resuming research…" });
+    // "Resuming" only for a job that already wrote part of its folders (restored after a restart or a retry).
+    emit({ kind: "step", text: job.done.length > 0 ? `Resuming ${topic}…` : `Researching ${topic}…` });
     let current: Job = job;
 
     const done = [...job.done];

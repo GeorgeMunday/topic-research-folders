@@ -80,3 +80,12 @@ test("styles: modal-only classes removed; explorer spinner and settings classes 
   expect(css).not.toMatch(/\.trf-spinner|\.trf-progress|\.trf-item-/);
   for (const cls of [".trf-working", ".trf-error", ".trf-muted", ".trf-spin "]) expect(css).toContain(cls);
 });
+
+test("item 3: the status bar item is styled by a class (cursor pointer), not inline display styles", () => {
+  expect(read("styles.css")).toMatch(/\.trf-status\s*\{[^}]*cursor:\s*pointer/);
+  const main = read("src/main.ts");
+  expect(main).toContain("trf-status");
+  expect(main).not.toMatch(/style\.display/);
+  expect(main).toMatch(/new Menu\(\)/);
+  expect(main).toMatch(/hub\.menuItems\(\)/);
+});

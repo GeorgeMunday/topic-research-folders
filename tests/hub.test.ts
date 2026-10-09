@@ -616,3 +616,42 @@ describe("item 2: spinner paths", () => {
     expect(h.spin()).toEqual(["B"]);
   });
 });
+
+describe("item 3: status text and status bar menu", () => {
+  test("status text: 'Researching Black holes…' during research, 'Analysing paper.pdf (chunk 2/6)…' during a pdf run, 'Suggestions ready (N)' with only pending left, empty when idle", () => {
+    const h = setup();
+    const r = nextRunId();
+    h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(r));
+    expect(h.status()).toBe("Researching Black holes…");
+    const pdf: ProgressSource = { kind: "pdf", resumed: false, runId: nextRunId() };
+    h.hub.sink("T/paper.pdf", { kind: "step", text: "Analysing paper.pdf (chunk 2/6)…" }, pdf);
+    expect(h.status()).toBe("Analysing paper.pdf (chunk 2/6)… (+1 more)");
+    h.hub.sink("T/paper.pdf", { kind: "done", folders: 1, notes: 1 }, pdf);
+    expect(h.status()).toBe("Researching Black holes…");
+    h.hub.sink(T, { kind: "outline", outline }, research(r));
+    h.hub.sink("Stars", { kind: "outline", outline }, research(nextRunId()));
+    expect(h.status()).toBe("Suggestions ready (2)");
+    h.hub.cancelAll();
+    expect(h.status()).toBe("");
+  });
+
+  test("menuItems for idle / active / pending; the 'Cancel all' item runs the injected cancelAllJobs action (queue side) and clears the hub", async () => {
+    const h = setup();
+    let cancelledJobs = 0;
+    (h.hub as any).actions.cancelAllJobs = () => { cancelledJobs++; };
+    expect(h.hub.menuItems()).toEqual([]);
+    h.hub.sink("B", { kind: "step", text: "Writing" }, research(nextRunId()));
+    expect(h.hub.menuItems().map((m) => m.label)).toEqual(["Cancel all research jobs"]);
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    const items = h.hub.menuItems();
+    expect(items.map((m) => m.label)).toEqual(["Cancel all research jobs", "Review pending suggestions"]);
+    items[1].run();
+    expect(h.reviews).toHaveLength(1);
+    items[0].run();
+    expect(cancelledJobs).toBe(1);
+    expect(h.hub.pending()).toEqual([]);
+    expect(h.spin()).toEqual([]);
+    expect(h.notices.at(-1)!.text).toBe("Cancelled all research jobs.");
+    expect(h.hub.menuItems()).toEqual([]);
+  });
+});
