@@ -1163,3 +1163,339 @@ test("navSelector escapes quotes and backslashes", () => {});
   6. Collapse and expand the folder while it works: the spinner returns. Restart Obsidian mid-job: no modal opens; the status bar and spinner resume.
   7. Turn on your OS "reduce motion" setting: spinners are replaced by static "…".
 - [ ] **Step 7: Commit** with message `feat: explorer spinner, status bar progress and modal wiring`.
+
+---
+
+# Addendum 2: Tasks 14–19 (non-blocking loading, PDF triggers, two-stage PDF research, follow-up fixes)
+
+> Tasks 1–13 are implemented. These tasks change behaviour that earlier tasks introduced; the "Supersedes" list below says exactly what is replaced. Same rules as before: test-first (capture the red run before implementing; a test that already passes proves nothing), `npm test` and `npm run build` both pass before an item is done, no real API key anywhere, fake HTTP only. **Each numbered item (1–17) is its own commit** with a `feat:`/`fix:`/`refactor:` message. Item numbers below are the user's numbering.
+
+## Supersedes
+
+- **Task 13 UI:** the loading modal and the progress modal (phases loading/writing/done/failed/cancelled of `ResearchProgressModal`, `session` wiring, `shouldOpenSession`, `restoredPaths`) are removed. The suggestion list becomes a plain `SuggestionModal` again (choose phase only).
+- **Task 9:** `ResearchFlow.run` no longer awaits an `Approver` inside the queue slot. It stores the outline as a *pending review* and finishes. `Approver`, `deps.approver`, `listPdfs`, `queuePdfs` are removed from `ResearchDeps`; the research flow no longer enqueues PDFs.
+- **Task 10:** automatic PDF processing, the 2-second multi-drop batching, `queuePaths`, `forget`, `setTimer` and the "Analyse PDFs in this folder" command are removed. `PdfFlow` is rewritten around the suffix trigger and the two-stage run. `extractPdf`, `pdfPrompt`, `parsePdfExtraction`, `PdfExtraction`, `ExtractedNote`, `VaultWriter.writeExtracted` and `mergeExtractions` are deleted in item 10 (dead code).
+- **Task 11:** the status bar item becomes clickable; `main.ts` keeps only adapters and registration (the Notice/spinner/failure wiring moves to `src/ui/hub.ts`).
+- **Task 12:** model choice gains an "explicitly chosen" flag and capability-based disabling.
+
+## Decisions (made where the requests conflict or are silent; each is cheap to reverse)
+
+1. **Pending suggestions are not held in a queue slot.** If the research job waited for the user inside `run`, two unreviewed topics would occupy both `maxConcurrent` slots and block every other job. Instead the outline job *finishes* after storing `{ path, outline }` in `PluginData.pendingReviews` (persisted, so it survives a restart). Review (Notice button or command) opens the suggestion modal; **Create** enqueues a normal research job `{ approved }`; closing the modal without Create deletes the pending review and counts as a cancel.
+2. **Inside a research root, a PDF's key points go to the matching existing subfolder** (case-insensitive name match from the model's `subfolder`), else to `From PDFs/<key point name>/` (as before); its overview goes to `Sources/<pdf name> - Overview.md` without the research-root marker. **Outside a root**, `<pdf dir>/<pdf name>/` is created and holds `<pdf name> - Overview.md` **with** `research-root: true` (the folder becomes a normal research root) plus one subfolder per key point.
+3. **Linking to a subfolder:** wikilinks cannot target folders, so Stage 1 also writes an *entry note* `<Key point name>.md` (normal template, built from what the PDF says) into each key point's folder, and the overview links `[[<folder>/<Key point name>|<Key point name>]]`. The links therefore resolve before Stage 2 has produced anything.
+4. **Large-PDF confirm stays a (small) modal** (`ConfirmModal`) because item 9 requires it; it is the one exception to "the suggestion modal is the only modal" and appears only for a single PDF over `confirmAbovePages`.
+5. **Model capability disabling:** a model whose `capabilities.pdf_input.supported === false` is always disabled with "(no PDF support)"; one whose `capabilities.server_tools.web_search.supported === false` is disabled with "(no web search)" **only while "Use web search" is on**. `capabilities` null or missing fields never disable anything.
+6. **Item 14's "stale restart marker"** disappears with the removal of `restoredPaths`; the regression tests are written against the new pending-review/restore flow (cancelling a restored pending review or job leaves no stale state).
+
+## Global Constraints (Tasks 14–19)
+
+- **Nothing blocks the user while work runs.** The only loading indicators are: a small spinning circle next to the item's name in the file explorer (the topic folder while it is researched or awaiting review; a PDF file while it is analysed; a key-point folder while it is researched), and status bar text. No modal opens by itself except the user-confirmed ones: `SuggestionModal` (opened from Review) and the large-PDF `ConfirmModal`.
+- **Spinner:** CSS class `trf-working` on `.nav-folder-title[data-path]` / `.nav-file-title[data-path]`; re-applied after explorer re-renders (MutationObserver, childList+subtree only); removed on finish, failure, cancel, queue idle, unload. `prefers-reduced-motion: reduce` shows a static dot (`•`) instead of rotating.
+- **Status bar:** text like `Researching Black holes…`, `Analysing paper.pdf (chunk 2/6)…`; hidden when idle; clicking it opens a menu with **Cancel all research jobs** (and **Review pending suggestions** when any exist).
+- **PDF trigger:** a PDF is processed only when its name ends with the trigger suffix: `paper+.pdf` (main form) or `paper.pdf+`. Case-insensitive `.pdf`. A bare `+.pdf` / `.pdf+` is not a trigger. After triggering, the file is renamed to `paper.pdf` (collision-safe: `paper (2).pdf`) when `stripSuffix` is on. Explicit triggers always run regardless of `processedPdfs`; the hash is only used to skip a *restored* pdf job that already finished before a restart.
+- **PDF overview:** exactly 5 key points, or fewer when the document genuinely has fewer distinct ideas; never padded; each ends with `(p. N)`; chunked PDFs merge chunk results and a text-only model call picks the top 5 overall; each key point has a name of at most 5 words.
+- **Key point research:** one queued job per key point (kind `keypoint`), `notesPerSubfolder` notes each in the normal note template, web search when `useWebSearch` is on, context = PDF title + key point + what the PDF says about it; no approval modal; one failure never stops the others.
+- **Notices:** neutral (not error-styled) for a user cancel (`Cancelled`) and for re-triggering a researched folder (`Already researched — use 'Research this folder' to run it again`). "Research this folder" (command and context menu) forces a re-run of an already researched folder.
+- **Status text** never mentions the web when `useWebSearch` is off.
+- **Model default:** `claude-sonnet-5-5`; an `(unavailable)` option plus warning appears only if the user explicitly chose that model; if nothing was chosen and the default is not listed, silently use the first active model.
+- Deployed files: `main.js`, `manifest.json`, `styles.css` (documented in `README.md`).
+
+## Review Focus (Tasks 14–19)
+
+1. **Two unreviewed topics must not block PDFs or other research.** Pinned by Task 16 `outline job finishes and frees its slot`.
+2. **A restart with a pending review.** Spinner and a "Suggestions ready" Notice return; no modal opens by itself; the outline is not re-requested (no second API charge). Pinned by Task 16 `restored pending review`.
+3. **Renaming a PDF to `paper+.pdf` fires create/rename events for the rename back.** No retrigger, no loop; `paper (2).pdf` on collision. Pinned by Task 17 tests.
+4. **A 400-page PDF with 5 key points and 5 web-searched jobs on a 429 storm.** Stage 1 retries without re-sending finished chunks; a failing key-point job does not stop the others; the queue still honours `maxConcurrent`. Pinned by Task 18 tests.
+5. **The same notice twice** (flow failed, then queue gave up) shows once. Pinned by Task 15 hub tests.
+
+## File Structure (Tasks 14–19)
+
+```
+  README.md                    NEW (item 17)
+  src/
+    ui/hub.ts                  NEW pure: ProgressHub (Notices, spinner set, status text, pending reviews, run ids, dedupe)
+    progress.ts                RunGate/ProgressTracker/noticeFor move behind the hub; + neutral messages; ProgressSource.kind adds "keypoint"
+    types.ts                   Job adds "keypoint" + research.force + pdf.resume; KeyPoint, PdfOverview; removes PdfExtraction/ExtractedNote (item 10)
+    pdf/trigger.ts             NEW pure: pdfTriggerName
+    flows/researchFlow.ts      outline job stores a pending review and finishes; "force"; no Approver, no PDF enqueue
+    flows/pdfFlow.ts           rewritten: suffix trigger, rename, per-PDF confirm, Stage 1
+    flows/keypointFlow.ts      NEW: Stage 2 job runner
+    research/prompts.ts        + pdfOverviewPrompt, mergeOverviewsPrompt; - pdfPrompt (item 10)
+    research/parse.ts          + parsePdfOverview, parseMergedOverview; - parsePdfExtraction (item 10)
+    research/claudeClient.ts   ResearchClient: + overviewPdf, mergeOverviews; - extractPdf
+    vault/writer.ts            + writePdfOverview, + containerFor; - writeExtracted (item 10)
+    vault/noteTemplate.ts      + renderPdfOverview
+    models.ts / settings.ts    modelChosen flag, capability flags, PluginData.pendingReviews
+    ui/SuggestionModal.ts      back, choose-phase only (ResearchProgressModal.ts and progressModel.ts deleted)
+```
+
+---
+
+### Task 14: Small fixes (items 11, 12, 13)
+
+**Files:** Modify `src/models.ts`, `src/settings.ts`, `src/flows/researchFlow.ts`, `src/progress.ts`, `src/main.ts`; tests: extend `tests/models.test.ts`, `tests/settings.test.ts`, `tests/researchFlow.test.ts`, `tests/progress.test.ts`.
+
+**Interfaces:**
+- `Settings` gains `modelChosen: boolean` (default `false`). `mergeData`: a saved `model` that differs from the default and has no `modelChosen` is treated as chosen (`true`); a missing/non-boolean flag otherwise defaults to `false`. The Task 11 `defaults` test is updated to include the field.
+- `modelOptions(models: ModelInfo[], savedId: string, chosen: boolean)` and `pickerView(state: CatalogState, savedId: string, chosen: boolean)`: when `chosen` is false and `savedId` is not an active listed model, `selected` is `claude-sonnet-5-5` if listed, else the first active model, with **no** warning and no `(unavailable)` option; when `chosen` is true the Task 12 behaviour is unchanged. The settings tab saves an automatic selection into `settings.model` without setting `modelChosen`; picking from the dropdown sets `modelChosen = true`.
+- `src/progress.ts`: `export const ALREADY_RESEARCHED_MESSAGE = "Already researched — use 'Research this folder' to run it again"`; `export function isNeutralMessage(msg: string): boolean` (true for `CANCELLED_MESSAGE` and `ALREADY_RESEARCHED_MESSAGE`); `noticeFor` returns `{ text: string; error: boolean }` where neutral messages give `error: false` and a user cancel now yields the Notice text `Cancelled` (previously `null`).
+- `ResearchFlow.researchFolder(path: string, opts?: { force?: boolean }): Promise<void>`; the research `Job` gains `force?: boolean`; a fresh job with `force` skips the "already researched" check. "Research this folder" (command and folder menu) passes `{ force: true }`; the `Topic+` trigger does not.
+
+- [ ] **Item 11, Step 1: write the failing tests.**
+```ts
+test("modelOptions: not chosen and default missing -> first active model, no warning, no unavailable option", () => {});
+test("modelOptions: chosen and missing -> '<id> (unavailable)' option and a warning (unchanged)", () => {});
+test("modelOptions: not chosen and default listed -> default selected", () => {});
+test("mergeData: model other than the default without the flag -> modelChosen true; no model -> false", () => {});
+test("pickerView passes the chosen flag through", () => {});
+```
+- [ ] **Step 2:** run `npx vitest run tests/models.test.ts tests/settings.test.ts` — expected FAIL (capture it). **Step 3:** implement the flag, `modelOptions`/`pickerView` change, dropdown `onChange` sets `modelChosen`, automatic selection saved without it. **Step 4:** tests pass, `npm test` and `npm run build`. **Step 5: Commit** `fix: only warn about an unavailable model the user chose`.
+- [ ] **Item 12, Step 1: write the failing tests** in `tests/researchFlow.test.ts`.
+```ts
+test("web search off: no emitted step text mentions the web or searching; first step is 'Researching <topic>…'", () => {});
+test("web search on: steps include 'Searching the web…' (once, before the staged 'Suggesting folders…')", () => {});
+```
+  **Step 2–4:** red run, make the flow (and any status copy) emit web-search wording only when `settings().useWebSearch`, green. **Step 5: Commit** `fix: mention web search only when it is on`.
+- [ ] **Item 13, Step 1: write the failing tests.**
+```ts
+test("isNeutralMessage: Cancelled and Already researched are neutral, other text is not", () => {});
+test("noticeFor: failed Cancelled -> { text: 'Cancelled', error: false }", () => {});
+test("noticeFor: failed ALREADY_RESEARCHED_MESSAGE -> neutral text, error false", () => {});
+test("researchFlow: fresh job on a researched folder emits failed ALREADY_RESEARCHED_MESSAGE; with force it proceeds to the outline", () => {});
+test("researchFolder(path, {force:true}) enqueues a job with force; onFolderEvent never forces", () => {});
+```
+  **Step 2–4:** red, implement (the flow uses `ALREADY_RESEARCHED_MESSAGE`; wire `force` through `researchFolder`, the job, the command and menu in `main.ts`), green. **Step 5: Commit** `fix: neutral notices for cancel and already-researched, and a forced re-run`.
+
+---
+
+### Task 15: Testable hub (item 15)
+
+**Files:** Create `src/ui/hub.ts`, `tests/hub.test.ts`. Modify `src/progress.ts` (RunGate/tracker/noticeFor stay there and are used by the hub). `main.ts` is wired to the hub in Task 16; this task adds the hub and its tests only.
+
+**Interfaces:** `hub.ts` is pure (no `obsidian` import).
+```ts
+export interface PendingReview { path: string; outline: Outline; }
+export interface HubUi {
+  notice(text: string, opts?: { error?: boolean; action?: { label: string; run: () => void } }): void;
+  setStatus(text: string): void;                 // "" hides the item
+  setSpinners(paths: string[]): void;
+  reviewModal(outline: Outline): Promise<SubfolderSuggestion[] | null>;   // resolves null when closed without Create
+}
+export interface HubActions {
+  startApproved(path: string, approved: SubfolderSuggestion[]): void;      // enqueue the research job with `approved`
+  cancelJob(kind: Job["kind"], path: string): boolean;
+  retry(path: string): void;
+  persistPending(list: PendingReview[]): void;
+}
+export class ProgressHub {
+  constructor(ui: HubUi, actions: HubActions);
+  readonly sink: ProgressSink;                   // (path, event, src) from the flows
+  onQueueChange(running: number, queued: number): void;      // clears everything when 0/0 and nothing pending
+  onQueueFailed(job: Job, err: unknown): void;               // deduped against a flow-sent failure for the same run
+  restorePending(list: PendingReview[], jobs: Job[]): void;  // after restart: spinner + one "Suggestions ready" notice each, no modal
+  pending(): PendingReview[];
+  review(path?: string): void;                   // Notice button / command: opens the modal for `path` or the oldest pending one
+  cancelAll(): void;                             // clears pending, spinners, status
+  dispose(): void;                               // ignores everything afterwards
+}
+```
+Behaviour: wraps `ProgressTracker`, `RunGate` and `noticeFor` (run-id dedupe as implemented in Task 13). An `outline` event for a research source records a pending review, calls `persistPending`, keeps the spinner on and shows `Suggestions ready for <topic>` with a **Review** action. `review()` awaits `ui.reviewModal`; a result starts the approved job (`actions.startApproved`) and removes the pending review; `null` removes it, clears the spinner and shows the neutral `Cancelled` notice.
+
+- [ ] **Step 1: Write the failing tests** (`tests/hub.test.ts`, fake `HubUi` recording calls, fake `HubActions`).
+```ts
+test("folder research success: spinner on first step, status text, done notice, spinner cleared", () => {});
+test("outline failure: failed event -> one error notice, spinner cleared, no pending review", () => {});
+test("user cancel via the review modal (null): neutral 'Cancelled' notice, spinner cleared, pending removed and persisted", () => {});
+test("suggestions ready, then reviewed later: notice with Review action, spinner stays, review() starts the approved job", () => {});
+test("resumed job awaiting review: restorePending shows the notice and spinner, opens no modal, does not call retry or enqueue", () => {});
+test("queue failure after flow failure shows one notice only", () => {});
+test("PDF two-stage run: pdf steps + done -> overview notice; keypoint steps spin the key point folder; a failed keypoint -> one error notice; others unaffected", () => {});
+test("onQueueChange(0,0) clears spinners and status but keeps spinners of pending reviews", () => {});
+test("cancelAll clears pending reviews, spinners and status and persists the empty list", () => {});
+test("dispose ignores later events", () => {});
+```
+- [ ] **Step 2:** `npx vitest run tests/hub.test.ts` — expected FAIL (capture it). **Step 3:** implement `ProgressHub` using the existing `ProgressTracker`, `RunGate`, `noticeFor`, `nextRunId` (move shared helpers if needed; keep their tests green). The PDF/keypoint events use `ProgressSource.kind` `"pdf"` / `"keypoint"` (added to the union here; the flows start emitting `"keypoint"` in Task 18). **Step 4:** pass; `npm test`, `npm run build`. **Step 5: Commit** `refactor: add a testable progress hub`.
+
+---
+
+### Task 16: Non-blocking loading (items 4, 5, 1, 2, 3, 14)
+
+**Files:** Modify `src/flows/researchFlow.ts`, `src/types.ts`, `src/settings.ts` (`PluginData.pendingReviews`, `mergeData`), `src/main.ts`, `src/ui/SuggestionModal.ts` (recreated), `src/ui/explorerSpinner.ts`, `styles.css`; delete `src/ui/ResearchProgressModal.ts`, `src/ui/progressModel.ts` and their tests. Tests: extend `tests/researchFlow.test.ts`, `tests/hub.test.ts`, `tests/settings.test.ts`.
+
+**Interfaces:** `PluginData.pendingReviews: PendingReview[]` (default `[]`, validated item by item in `mergeData`). `ResearchFlow.run` after a successful outline: emits `outline`, then **returns** (no `Approver`; job completes, slot freed). A job with `approved` runs the writing stages as before.
+
+- [ ] **Item 4 + 5, Step 1: write the failing tests.**
+```ts
+test("outline job emits step(s) then outline and finishes without writing anything or awaiting the user", () => {});
+test("outline job frees its queue slot: with maxConcurrent 1, a second queued job runs while the first awaits review", () => {});
+test("hub: Create enqueues a research job with approved; a second review of the same path is a no-op", () => {});
+test("hub: closing the suggestion modal without Create cancels the job: pending removed, spinner cleared, neutral notice", () => {});
+test("settings: pendingReviews survive mergeData; invalid entries are dropped", () => {});
+test("restored pending review (hub.restorePending): notice with Review, spinner on, outline not requested again", () => {});
+test("'Review pending suggestions' with nothing pending shows a neutral notice", () => {});
+```
+  **Step 2:** red run. **Step 3:** flow change, `pendingReviews` persistence (`persistPending` saves `data.json`), wire `main.ts` to `ProgressHub`: the sink and queue callbacks go to the hub, `HubUi.reviewModal` opens `SuggestionModal`, `HubUi.notice` builds a Notice with a **Review** button (`DocumentFragment` with a `button`), command **Review pending suggestions** (`id: review-pending-suggestions`), `onLayoutReady` calls `hub.restorePending(data.pendingReviews, resumedJobs)`. **Step 4:** green. **Step 5: Commit** `feat: review folder suggestions on demand instead of in a blocking modal` (item 4) — then a second commit `feat: closing the suggestion modal cancels the job` if the cancel path is separate (item 5).
+- [ ] **Item 1, Step 1: write the failing tests.**
+```ts
+test("no session or modal object is created for any progress event (hub opens nothing except through review())", () => {});
+test("loading, progress and error events produce only status/spinner/notice calls", () => {});
+```
+  **Step 2–4:** delete the loading/progress modal files and `session`/`restoredPaths`/`shouldOpenSession` code and their tests, keep `selectApproved`. **Step 5: Commit** `refactor: remove the loading and progress modals`.
+- [ ] **Item 2, Step 1: write the failing tests** (`tests/explorerSpinner.test.ts`, `tests/hub.test.ts`).
+```ts
+test("spinner paths: the topic folder while researching and while awaiting review; the pdf file while analysing; removed on done, failed, cancelled", () => {});
+test("navSelector unchanged; spinnerClassFor('•' reduced motion) is documented in CSS (css text contains a prefers-reduced-motion block with content: '•')", () => {});
+```
+  **Step 2–4:** CSS: `.trf-working::after` ring rotates; under `prefers-reduced-motion: reduce` it is a static dot (`content: "•"`, no border, no animation). **Step 5: Commit** `feat: file explorer spinner for folders and PDFs with a static dot for reduced motion`.
+- [ ] **Item 3, Step 1: write the failing tests** (`tests/hub.test.ts`).
+```ts
+test("status text: 'Researching Black holes…' during research, 'Analysing paper.pdf (chunk 2/6)…' during a pdf run, empty when idle", () => {});
+test("status shows the latest step of the most recently updated active path", () => {});
+test("hub exposes menuItems(): Cancel all research jobs always when work exists; Review pending suggestions when pending", () => {});
+```
+  **Step 2–4:** `main.ts`: `statusEl` registers a click handler that opens an Obsidian `Menu` built from `hub.menuItems()`; status text comes from `HubUi.setStatus`. **Step 5: Commit** `feat: clickable status bar with cancel and review actions`.
+- [ ] **Item 14, Step 1: write the failing regression tests** (`tests/hub.test.ts`, `tests/researchFlow.test.ts`).
+```ts
+test("cancelling a restored pending review clears its spinner and persisted entry; re-triggering the same folder then behaves like a fresh run", () => {});
+test("cancelling a restored research job (Cancel all) leaves no stale state: the next trigger on that path is accepted and shows its notices", () => {});
+```
+  **Step 2–4:** fix whatever state survives. **Step 5: Commit** `fix: cancelling a restored job clears its state`.
+- [ ] **Step 6: Verify.** `npm test` and `npm run build`.
+
+---
+
+### Task 17: PDF trigger on the PDF itself (items 6, 7, 8, 9)
+
+**Files:** Create `src/pdf/trigger.ts`; modify `src/flows/pdfFlow.ts`, `src/flows/researchFlow.ts`, `src/types.ts` (`Job` pdf gets `resume?: boolean`), `src/main.ts`; tests `tests/pdfTrigger.test.ts`, extend `tests/pdfFlow.test.ts`, `tests/researchFlow.test.ts`.
+
+**Interfaces:**
+```ts
+// src/pdf/trigger.ts (pure)
+export function pdfTriggerName(fileName: string, suffix: string): { clean: string } | null;
+// "paper+.pdf" -> { clean: "paper.pdf" }; "paper.pdf+" -> { clean: "paper.pdf" }; "paper.pdf" -> null; "+.pdf" -> null; "notes+.PDF" -> { clean: "notes.PDF" }; "a.txt+" -> null
+export function containerFor(pdfPath: string, root: { root: string } | null): { container: string; asRoot: boolean };
+// no root -> { container: "<dir>/<stem>" (collision-safe at creation), asRoot: true }; inside a root -> { container: root.root, asRoot: false } (overview goes to <root>/Sources)
+// PdfFlow
+PdfDeps: { client, writer, notify, confirm, readBinary, settings, today, enqueue, processed, markProcessed, rename, progress? }   // setTimer and forget removed
+PdfFlow.onFileEvent(path: string): Promise<void>     // any file; only trigger names do anything
+PdfFlow.run: Runner
+```
+Main registers every non-folder `create`/`rename` for `pdfFlow.onFileEvent` (gated by `processPdfs`).
+
+- [ ] **Item 6, Step 1: write the failing tests.**
+```ts
+test("research flow finishing does not enqueue or queue any pdf (no listPdfs/queuePdfs in deps)", () => {});
+test("a pdf created inside a research root without the suffix is ignored", () => {});
+```
+  **Step 2–4:** remove `listPdfs`/`queuePdfs` from `ResearchDeps` and wiring; stop treating plain PDFs as work. **Step 5: Commit** `feat: stop processing every PDF in a research folder`.
+- [ ] **Item 7, Step 1: write the failing tests.**
+```ts
+test("pdfTriggerName table above, plus multi-character suffix and trailing spaces ('paper +.pdf' is a trigger, clean 'paper .pdf' trimmed to 'paper.pdf')", () => {});
+test("onFileEvent: ignores events before ready; ignores non-triggers; for paper+.pdf renames to paper.pdf and enqueues a pdf job for the clean path", () => {});
+test("accepts paper.pdf+ too", () => {});
+test("stripSuffix off: no rename, job for the original path", () => {});
+test("rename collision -> 'paper (2).pdf'", () => {});
+test("the rename back to paper.pdf does not retrigger (no suffix) and consumeCreated-style double events enqueue once (dedupe by kind+path)", () => {});
+test("an unreadable or missing file at trigger time is skipped silently", () => {});
+```
+  **Step 2–4:** implement `pdfTriggerName` (apply `isTriggerName` logic to the stem for the `+.pdf` form; to the whole name for the `.pdf+` form), rewrite `onFileEvent`; remove the batching timer, `pendingHashes`, `queuePaths`, `forget`. **Step 5: Commit** `feat: trigger PDF analysis with the suffix on the PDF name`.
+- [ ] **Item 8, Step 1: write the failing tests.**
+```ts
+test("containerFor: pdf outside any root -> '<dir>/<stem>'; inside a root -> the root (overview in <root>/Sources)", () => {});
+test("run outside a root creates '<dir>/<stem>' (collision-safe) and marks the overview as research-root", () => {});
+test("run inside a root writes the overview under Sources without the research-root marker", () => {});
+```
+  **Step 2–4:** `findResearchRoot(pdfPath)` decides the case; the writer creates the container with `uniqueName`. **Step 5: Commit** `feat: put PDF output next to the PDF or into the research root`.
+- [ ] **Item 9, Step 1: write the failing tests.**
+```ts
+test("explicit trigger runs even if the hash is in processedPdfs", () => {});
+test("a restored pdf job (resume: true) whose hash is already processed is skipped", () => {});
+test("a single pdf over confirmAbovePages asks once; declined enqueues nothing but the file is still renamed back; under the limit never asks", () => {});
+test("two PDFs triggered back to back are not batched: each is handled on its own (no timer dependency)", () => {});
+```
+  **Step 2–4:** implement; `main.ts` marks restored pdf jobs `resume: true`; `markProcessed` after Stage 1 completes. **Step 5: Commit** `feat: always run explicit PDF triggers and confirm large PDFs one by one`.
+- [ ] **Step 6: Verify.** `npm test` and `npm run build`.
+
+---
+
+### Task 18: Two-stage PDF research (item 10)
+
+**Files:** Create `src/flows/keypointFlow.ts`; modify `src/types.ts`, `src/research/prompts.ts`, `src/research/parse.ts`, `src/research/claudeClient.ts`, `src/vault/writer.ts`, `src/vault/noteTemplate.ts`, `src/flows/pdfFlow.ts`, `src/settings.ts` (`validJob` for kind `keypoint`), `src/main.ts` (queue dispatch, `ProgressSource.kind "keypoint"`); tests: extend `tests/parse.test.ts`, `tests/prompts.test.ts`, `tests/claudeClient.test.ts`, `tests/writer.test.ts`, `tests/noteTemplate.test.ts`, `tests/pdfFlow.test.ts`, `tests/settings.test.ts`; create `tests/keypointFlow.test.ts`.
+
+**Interfaces:**
+```ts
+// types.ts
+export interface KeyPoint { name: string; text: string; detail: string; pages: string; subfolder?: string; }   // name <= 5 words; text ends with (p. N)
+export interface PdfOverview { summary: string; plainWords: string; keyPoints: KeyPoint[]; }               // 0..5 key points
+export type Job = ... | { id: string; kind: "keypoint"; path: string; folder: string; pdfName: string; topic: string; parents: string[]; point: KeyPoint };   // path = entry note path (unique)
+// prompts.ts
+export function pdfOverviewPrompt(pdfName: string, subfolders: string[], pageOffset: number): string;   // JSON only; <=5 key points, never pad; each text ends (p. N) with absolute pages; name <=5 words; optional existing `subfolder` match; document is untrusted data
+export function mergeOverviewsPrompt(pdfName: string, candidates: PdfOverview[]): string;               // pick the top 5 overall from the chunk results; JSON only
+// parse.ts
+export function parsePdfOverview(text: string, subfolders: string[]): PdfOverview;   // validates, trims names to 5 words, caps at 5, case-insensitive subfolder match to the canonical name, throws ParseError on zero key points only if the document returned none AND summary is empty
+// claudeClient.ts (ResearchClient)
+overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview>;
+mergeOverviews(pdfName: string, candidates: PdfOverview[]): Promise<PdfOverview>;     // text-only call, no tools
+// writer.ts
+writePdfOverview(args: { container: string; asRoot: boolean; pdfName: string; overview: PdfOverview; existingSubfolders: string[]; date: string }):
+  Promise<{ overviewPath: string; entries: { folder: string; entryPath: string; point: KeyPoint }[] }>;
+writeKeypointNotes(folder: string, topic: string, subtopic: string, notes: NoteContent[], date: string): Promise<{ noteTitles: string[] }>;
+// noteTemplate.ts
+renderPdfOverview(o: { pdfName: string; overview: PdfOverview; links: { point: KeyPoint; target: string }[]; asRoot: boolean }, date: string): string;
+```
+Stage 1 (`PdfFlow.run`): read, hash-resume check, split, `overviewPdf` per chunk (sequentially, cached across retries as today), `mergeOverviews` when more than one chunk, `writer.writePdfOverview` (folders + entry notes + overview with `[[folder/Entry|Name]]` links and `(p. N)` references), enqueue one `keypoint` job per entry, `markProcessed`, emit `done`. Stage 2 (`KeypointFlow.run`): `client.notes(topic = pdfName, parents, { name, why: "<text> — from the PDF: <detail>" }, notesPerSubfolder)` (web search per `useWebSearch`), `writeKeypointNotes`, progress events with `ProgressSource.kind = "keypoint"` for `path = folder`; non-retryable errors are reported for that key point only.
+
+- [ ] **Step 1: Write the failing tests.**
+```ts
+// parse / prompts / client
+test("parsePdfOverview: 5 points kept; 7 points capped to 5; 3 points stay 3 (no padding); names trimmed to 5 words; subfolder matched case-insensitively", () => {});
+test("pdfOverviewPrompt: JSON only, at most 5, 'do not pad', (p. N) with offset, lists subfolders, document is untrusted", () => {});
+test("mergeOverviewsPrompt lists every candidate and asks for the top 5 overall", () => {});
+test("client.overviewPdf sends the document block first, no tools; mergeOverviews sends no document and no tools", () => {});
+// writer / template
+test("writePdfOverview outside a root: '<container>/<pdf> - Overview.md' has research-root true, 5 key point bullets with (p. N) and [[folder/Entry|Name]] links, one folder + entry note per point", () => {});
+test("writePdfOverview inside a root: overview under Sources without the marker; a point whose subfolder matches an existing folder goes there, others go to From PDFs/<name>", () => {});
+test("overview links resolve: every [[target]] in the overview equals a created entry note path", () => {});
+test("thin document: 2 key points -> exactly 2 bullets and 2 folders", () => {});
+// stage 1
+test("pdf run: chunks -> overviewPdf per chunk with offsets, mergeOverviews once when chunked, not for a single chunk", () => {});
+test("pdf run enqueues exactly 5 keypoint jobs for a 5-point overview, 2 for a 2-point one, and marks the hash processed", () => {});
+test("retryable error in stage 1 does not resend finished chunks (cache kept) and does not enqueue jobs twice", () => {});
+// stage 2
+test("keypoint run writes notesPerSubfolder notes into its folder via client.notes with the PDF context in `why`", () => {});
+test("one failing keypoint job (non-retryable) emits failed for it only; the other four still complete", () => {});
+test("keypoint job with web search off passes the setting through; events use source kind 'keypoint'", () => {});
+test("settings.mergeData keeps valid keypoint jobs and drops malformed ones", () => {});
+```
+- [ ] **Step 2:** run the files above — expected FAIL (capture it). **Step 3:** implement; then **delete the dead code**: `extractPdf`, `pdfPrompt`, `parsePdfExtraction`, `PdfExtraction`, `ExtractedNote`, `writeExtracted`, `mergeExtractions` and their tests. **Step 4:** `npm test` and `npm run build` pass. **Step 5: Commit** `feat: two-stage PDF research with a 5-point overview and one job per key point`.
+
+---
+
+### Task 19: Capabilities and README (items 16, 17)
+
+**Files:** Modify `src/models.ts`, `src/settings.ts`; create `README.md`; tests extend `tests/models.test.ts`, `tests/settings.test.ts`.
+
+**Interfaces:** `ModelInfo` gains optional `pdf?: boolean | null` and `webSearch?: boolean | null` (`null`/missing = unknown), filled by `parseModelsPage` from `capabilities.pdf_input.supported` and `capabilities.server_tools.web_search.supported` (a non-boolean or missing value gives `null`). `modelOptions(models, savedId, chosen, opts?: { useWebSearch: boolean })` returns options with `disabled?: boolean`; labels get ` (no PDF support)` when `pdf === false` (always disabled) and ` (no web search)` when `webSearch === false` and `opts.useWebSearch` (disabled only then). Cached models (`ModelCache`) carry the new fields; `mergeData` validation accepts them.
+
+- [ ] **Item 16, Step 1: write the failing tests.**
+```ts
+test("parseModelsPage maps capabilities.pdf_input.supported and server_tools.web_search.supported; null capabilities -> unknown", () => {});
+test("modelOptions: pdf false -> '(no PDF support)' and disabled; unknown -> normal", () => {});
+test("modelOptions: web search false -> '(no web search)' disabled only when useWebSearch is on", () => {});
+test("a disabled saved model keeps being selected with a warning that says to pick another", () => {});
+test("mergeData keeps capability flags in the cache and tolerates old caches without them", () => {});
+```
+  **Step 2–4:** red, implement (settings tab passes `useWebSearch`; toggling it re-renders the dropdown options), green. **Step 5: Commit** `feat: disable models without PDF or web search support`.
+- [ ] **Item 17, Step 1:** a test that reads `README.md` and asserts it mentions `main.js`, `manifest.json`, `styles.css`, `Topic+` and `paper+.pdf` / `paper.pdf+` (fails first because the file does not exist). **Step 2–3:** write `README.md`: what the plugin does, install (copy the three files into `<vault>/.obsidian/plugins/topic-research-folders/`, enable community plugins, add the API key), the two triggers (folder `Topic+`; PDF `paper+.pdf` or `paper.pdf+`, renamed back after triggering), review of suggestions (Notice button / command), status bar menu, settings summary, the cost warning (each PDF = 1 overview request plus up to 5 key-point jobs). **Step 4:** `npm test` and `npm run build`. **Step 5: Commit** `feat: README with install files and both triggers` (use `feat:`/`docs:` per the request's `feat:` list — `docs:` is acceptable for this commit).
+
+---
+
+## Manual check (after Task 19)
+
+1. Create `Black holes+` and keep typing in another note while it runs: nothing interrupts you; the folder shows a spinner; the status bar reads `Researching Black holes…`; a Notice `Suggestions ready for Black holes` with **Review** appears; the spinner stays until you review. Clicking the status bar offers **Cancel all research jobs** (and **Review pending suggestions**). Close Obsidian before reviewing, reopen: the Notice and spinner return, no modal opens, no second API call.
+2. Review → untick one folder → **Create**: the spinner runs while it writes; notes land; a Notice reports the result. Review → close the modal without Create: `Cancelled` (neutral), spinner gone.
+3. Create `Black holes+` again after it exists: neutral `Already researched — use 'Research this folder' to run it again`; the command re-runs it.
+4. Rename a PDF to `paper+.pdf` outside any research folder: it is renamed back to `paper.pdf`, the PDF shows a spinner (status `Analysing paper.pdf (chunk 1/N)…`), then a `paper/` folder appears next to it with `paper - Overview.md` (5 key points with page references and working links) and 5 key-point subfolders that fill in as their jobs run.
+5. Do the same inside `Black holes/`: the overview lands in `Sources/`, matching subfolders receive their notes, others go to `From PDFs/`.
+6. Rename to `paper.pdf+` instead: same result. Rename a 300-page PDF: a confirm dialog asks once.
+7. Settings: pick a model from the list; models without PDF support are greyed with `(no PDF support)`; with an invalid key the red error shows and the list is kept.
