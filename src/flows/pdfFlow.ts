@@ -5,7 +5,7 @@ import type { VaultWriter } from "../vault/writer";
 import type { Runner } from "../jobs/queue";
 import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
-import { CANCELLED_MESSAGE, type ProgressSink } from "../progress";
+import { CANCELLED_MESSAGE, nextRunId, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
 
 export interface Confirmer { confirm(message: string): Promise<boolean>; }
@@ -77,7 +77,6 @@ export class PdfFlow {
   private eventChain: Promise<unknown> = Promise.resolve();
   private flushChain: Promise<unknown> = Promise.resolve();
   private timerGen = 0;
-  private runCounter = 0;
   private lastRun = new Map<string, number>();
   private retryPending = new Set<string>();
   // Completed chunk results per file hash, kept across retry attempts so a retry does not resend them.
@@ -197,7 +196,7 @@ export class PdfFlow {
     let runId: number;
     const prev = this.lastRun.get(job.path);
     if (this.retryPending.delete(job.path) && prev !== undefined) runId = prev;
-    else { runId = ++this.runCounter; this.lastRun.set(job.path, runId); }
+    else { runId = nextRunId(); this.lastRun.set(job.path, runId); }
     const src = { kind: "pdf" as const, resumed: false, runId };
     const emit = (e: Progress) => this.deps.progress?.(job.path, e, src);
     const fail = (error: string) => emit({ kind: "failed", error });
@@ -249,7 +248,7 @@ export class PdfFlow {
           done.set(i, r);
           results.push(r);
         } catch (e) {
-          if (isRetryable(e)) { keep = true; this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); throw e; }
+          if (isRetryable(e)) { keep = true; if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); } throw e; }
           const msg = `Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`;
           notify.error(msg);
           fail(msg);
@@ -263,7 +262,7 @@ export class PdfFlow {
         written = await writer.writeExtracted(root.root, root.topic, file, merged, today());
         await markProcessed(hash, job.path);
       } catch (e) {
-        if (isRetryable(e)) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); }
+        if (isRetryable(e)) { if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); } }
         else fail(e instanceof Error ? e.message : String(e));
         throw e;
       }

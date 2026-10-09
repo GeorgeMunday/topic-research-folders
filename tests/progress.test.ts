@@ -1,5 +1,5 @@
 import { test, expect, describe } from "vitest";
-import { ProgressTracker, CANCELLED_MESSAGE, noticeFor, RunGate } from "../src/progress";
+import { ProgressTracker, CANCELLED_MESSAGE, noticeFor, RunGate, nextRunId } from "../src/progress";
 
 const src = { kind: "research" as const, resumed: false };
 
@@ -135,5 +135,21 @@ describe("RunGate", () => {
     const g = new RunGate();
     g.accept("A", step, r(1));
     expect(g.accept("A", failed, r(2))).toBe(false);
+  });
+});
+
+describe("run id uniqueness", () => {
+  test("nextRunId is strictly increasing", () => {
+    const a = nextRunId(), b = nextRunId();
+    expect(b).toBeGreaterThan(a);
+  });
+  test("cancelling a pdf run does not drop a research run with the same numeric id", () => {
+    const g = new RunGate();
+    const pdf = { kind: "pdf" as const, resumed: false, runId: 7 };
+    const res = { kind: "research" as const, resumed: false, runId: 7 };
+    g.accept("a.pdf", { kind: "step", text: "x" }, pdf);
+    g.cancel("a.pdf");
+    expect(g.accept("a.pdf", { kind: "step", text: "x" }, pdf)).toBe(false);
+    expect(g.accept("T", { kind: "step", text: "x" }, res)).toBe(true);
   });
 });

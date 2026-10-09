@@ -648,3 +648,20 @@ describe("run identity", () => {
     expect(last[2].runId).not.toBe(first);
   });
 });
+
+describe("run identity after cancel and across flows", () => {
+  test("a retryable error after a cancel leaves no retry entry: the next run gets a new runId", async () => {
+    const s = setup();
+    const events: [string, Progress, ProgressSource][] = [];
+    s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
+    s.v.folders.add("T");
+    const orig = s.deps.client()!;
+    s.deps.client = () => ({ ...orig, outline: async () => { throw new ApiError("overloaded", 503); } });
+    await expect(s.flow.run(rjob("T"), { cancelled: true }, async () => {})).rejects.toBeInstanceOf(ApiError);
+    expect(events.some((x) => x[1].kind === "step" && x[1].text.startsWith("Retrying"))).toBe(false);
+    const first = events[0][2].runId;
+    s.deps.client = () => orig;
+    await s.run(rjob("T"));
+    expect(events.at(-1)![2].runId).not.toBe(first);
+  });
+});

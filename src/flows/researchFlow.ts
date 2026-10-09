@@ -1,5 +1,5 @@
 import type { Job, Outline, Progress, SubfolderSuggestion } from "../types";
-import { CANCELLED_MESSAGE, OUTLINE_STAGE_MS, type ProgressSink, type ProgressSource } from "../progress";
+import { CANCELLED_MESSAGE, nextRunId, OUTLINE_STAGE_MS, type ProgressSink, type ProgressSource } from "../progress";
 import type { Settings } from "../settings";
 import type { ResearchClient } from "../research/claudeClient";
 import type { VaultWriter } from "../vault/writer";
@@ -31,7 +31,6 @@ const parentOf = (p: string) => (p.lastIndexOf("/") >= 0 ? p.slice(0, p.lastInde
 
 export class ResearchFlow {
   private ready = false;
-  private runCounter = 0;
   private lastRun = new Map<string, number>();
   // Paths whose last invocation ended in a retryable rethrow: the queue's retry is the same logical run.
   private retryPending = new Set<string>();
@@ -92,12 +91,12 @@ export class ResearchFlow {
     let runId: number;
     const prev = this.lastRun.get(job.path);
     if (this.retryPending.delete(job.path) && prev !== undefined) runId = prev;
-    else { runId = ++this.runCounter; this.lastRun.set(job.path, runId); }
+    else { runId = nextRunId(); this.lastRun.set(job.path, runId); }
     const src: ProgressSource = { kind: "research", resumed, runId };
     const emit = (e: Progress) => { if (progress) progress(job.path, e, src); };
     const finish = (e: Progress & { kind: "done" | "failed" }) => emit(e);
     const cancelled = () => finish({ kind: "failed", error: CANCELLED_MESSAGE });
-    const retrying = (err: unknown) => { if (isRetryable(err)) { this.retryPending.add(job.path); emit({ kind: "step", text: "Retrying after a temporary error…" }); } };
+    const retrying = (err: unknown) => { if (isRetryable(err) && !signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: "Retrying after a temporary error…" }); } };
     // Pre-start exits: the sink gets a terminal failed with the notice text; otherwise the notice itself.
     const reject = (msg: string, level: "info" | "error") => {
       if (progress) finish({ kind: "failed", error: msg });

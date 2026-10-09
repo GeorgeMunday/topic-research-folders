@@ -5,6 +5,11 @@ export type ProgressSink = (path: string, e: Progress, src: ProgressSource) => v
 export const CANCELLED_MESSAGE = "Cancelled";
 export const OUTLINE_STAGE_MS = 8000;
 
+let runIdCounter = 0;
+/** Globally unique run id shared by every flow. */
+export function nextRunId(): number { return ++runIdCounter; }
+export function resetRunIds(): void { runIdCounter = 0; } // tests only
+
 export class ProgressTracker {
   // Map insertion order = activation order; texts keyed by path.
   private texts = new Map<string, string>();
@@ -85,18 +90,20 @@ export function noticeFor(
 // Decides whether a progress event belongs to the run the UI currently tracks for a path.
 export class RunGate {
   private current = new Map<string, number>();
+  private kinds = new Map<string, ProgressSource["kind"]>();
   private ended = new Set<string>();
-  private cancelled = new Set<number>();
+  private cancelled = new Set<string>();
 
   accept(path: string, e: Progress, src: ProgressSource): boolean {
     const id = src.runId;
     if (id === undefined) return true;
-    if (this.cancelled.has(id)) return false;
+    if (this.cancelled.has(`${src.kind}:${id}`)) return false;
     const cur = this.current.get(path);
     if (cur !== id) {
       if (cur !== undefined && id < cur) return false;
       if (!(cur === undefined || this.ended.has(path) || e.kind === "step")) return false;
       this.current.set(path, id);
+      this.kinds.set(path, src.kind);
       this.ended.delete(path);
     }
     if (e.kind === "done" || e.kind === "failed") this.ended.add(path);
@@ -107,7 +114,8 @@ export class RunGate {
 
   cancel(path: string): void {
     const cur = this.current.get(path);
-    if (cur !== undefined) this.cancelled.add(cur);
+    const k = this.kinds.get(path);
+    if (cur !== undefined && k) this.cancelled.add(`${k}:${cur}`);
     this.current.delete(path);
     this.ended.delete(path);
   }

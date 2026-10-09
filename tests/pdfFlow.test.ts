@@ -718,3 +718,33 @@ describe("pdf run identity", () => {
     expect(typeof [...a][0]).toBe("number");
   });
 });
+
+describe("pdf run identity after cancel and across flows", () => {
+  test("a retryable error after a cancel leaves no retry entry: the next run gets a new runId", async () => {
+    const c = setup();
+    const events: [string, Progress, ProgressSource][] = [];
+    (c.flow as any).deps.progress = (p: string, e: Progress, src: ProgressSource) => { events.push([p, e, src]); };
+    c.files.set("Topic/a.pdf", pdf3);
+    const sig = { cancelled: false };
+    c.extract.mockImplementation(async () => { sig.cancelled = true; throw new ApiError("overloaded", 503); });
+    await expect(c.flow.run(job("Topic/a.pdf"), sig, noCp)).rejects.toBeInstanceOf(ApiError);
+    expect(events.some((x) => x[1].kind === "step" && x[1].text.startsWith("Retrying"))).toBe(false);
+    const first = events[0][2].runId;
+    c.extract.mockReset();
+    c.files.set("Topic/b.pdf", pdf3);
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp).catch(() => {});
+    expect(events.at(-1)![2].runId).not.toBe(first);
+  });
+  test("run ids from a research flow and a pdf flow never collide", async () => {
+    const c = setup();
+    const ev: ProgressSource[] = [];
+    (c.flow as any).deps.progress = (_p: string, _e: Progress, src: ProgressSource) => { ev.push(src); };
+    c.files.set("Topic/a.pdf", pdf3);
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp).catch(() => {});
+    const { nextRunId } = await import("../src/progress");
+    const other = nextRunId();
+    expect(ev.length).toBeGreaterThan(0);
+    expect(ev.every((s) => s.runId !== other)).toBe(true);
+    expect(other).toBeGreaterThan(Math.max(...ev.map((s) => s.runId!)));
+  });
+});
