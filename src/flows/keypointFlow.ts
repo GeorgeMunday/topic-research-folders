@@ -5,6 +5,7 @@ import type { VaultWriter } from "../vault/writer";
 import type { Runner } from "../jobs/queue";
 import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
+import { contextToPrompt } from "../context";
 import { CANCELLED_MESSAGE, nextRunId, type ProgressSink, type ProgressSource } from "../progress";
 
 export interface KeypointDeps {
@@ -67,6 +68,7 @@ export class KeypointFlow {
         job.parents,
         { name: point.name, why: `${point.text} — from the PDF "${job.pdfName}"${docSummary ? ` (${docSummary})` : ""}: ${point.detail}` },
         settings().notesPerSubfolder,
+        { context: contextToPrompt(await writer.context(job.folder)) },
       );
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
       const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today());

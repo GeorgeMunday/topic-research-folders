@@ -9,6 +9,7 @@ import { CANCELLED_MESSAGE, nextRunId, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
 import { containerFor, pdfTriggerName } from "../pdf/trigger";
 import { uniqueName } from "../names";
+import { contextToPrompt } from "../context";
 import { ParseError } from "../research/parse";
 
 /** Marks pdf jobs restored from data.json: only those may be skipped because their content was processed before. */
@@ -221,6 +222,9 @@ export class PdfFlow {
         return e;
       };
 
+      // Inside a root the output joins that root's subfolders; otherwise it becomes a new folder next to the PDF.
+      const folderContext = contextToPrompt(await writer.context(plan.asRoot ? plan.container : `${plan.container}/${stem}`));
+
       let split: Awaited<ReturnType<typeof splitPdf>>;
       try {
         split = await splitPdf(bytes, settings().pdfPagesPerChunk, MAX_CHUNK_BYTES);
@@ -248,7 +252,7 @@ export class PdfFlow {
         if (cached) { results.push(cached); continue; }
         emit({ kind: "step", text: `Analysing ${file} (chunk ${i + 1}/${split.chunks.length})…` });
         try {
-          const r = await client.overviewPdf(stem, subfolders, chunk.base64, chunk.firstPage - 1);
+          const r = await client.overviewPdf(stem, subfolders, chunk.base64, chunk.firstPage - 1, folderContext);
           done.set(i, r);
           results.push(r);
         } catch (e) {

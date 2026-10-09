@@ -1,4 +1,5 @@
 import { sanitiseName, uniqueName } from "../names";
+import { buildContext, type FolderContext } from "../context";
 import { renderNote, renderOverview, renderPdfOverview } from "./noteTemplate";
 import type { KeyPoint, NoteContent, Outline, PdfOverview, SubfolderNotes } from "../types";
 
@@ -32,6 +33,11 @@ export class VaultWriter {
   /** True (once) if the plugin itself created this folder, so it must not trigger research. */
   consumeCreated(path: string): boolean {
     return this.created.delete(path);
+  }
+
+  /** What sits above and next to `path` in the vault (see context.ts). */
+  context(path: string): Promise<FolderContext> {
+    return buildContext(path, this.vault);
   }
 
   /** Names of everything (files and folders) directly inside a folder. */

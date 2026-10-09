@@ -1,13 +1,14 @@
 import type { Outline, NoteContent, PdfOverview, SubfolderSuggestion } from "../types";
-import { outlinePrompt, notesPrompt, pdfOverviewPrompt, mergeOverviewsPrompt } from "./prompts";
+import { outlinePrompt, notesPrompt, pdfOverviewPrompt, mergeOverviewsPrompt, type NotesOptions } from "./prompts";
 import { parseOutline, parseNotes, parsePdfOverview, ParseError } from "./parse";
 import { ApiError } from "../jobs/queue";
 
 export interface ResearchClient {
-  outline(topic: string, parents: string[], max: number): Promise<Outline>;
-  notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number): Promise<NoteContent[]>;
+  /** `context`: the prompt block describing the folders above the topic (see context.ts). */
+  outline(topic: string, parents: string[], max: number, context?: string): Promise<Outline>;
+  notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number, opts?: NotesOptions): Promise<NoteContent[]>;
   /** Stage 1 for one chunk: the document block first, no tools. */
-  overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview>;
+  overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number, context?: string): Promise<PdfOverview>;
   /** Picks the top 5 key points overall from the chunk results; text only, no document, no tools. */
   mergeOverviews(pdfName: string, candidates: PdfOverview[]): Promise<PdfOverview>;
 }
@@ -69,18 +70,18 @@ export class ClaudeClient implements ResearchClient {
     return lastJsonText(res.json);
   }
 
-  async outline(topic: string, parents: string[], max: number): Promise<Outline> {
-    return parseOutline(await this.call(outlinePrompt(topic, parents, max), 4096, true), max);
+  async outline(topic: string, parents: string[], max: number, context = ""): Promise<Outline> {
+    return parseOutline(await this.call(outlinePrompt(topic, parents, max, context), 4096, true), max);
   }
 
-  async notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number): Promise<NoteContent[]> {
-    return parseNotes(await this.call(notesPrompt(topic, parents, s, count), 8192, true), count);
+  async notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number, opts: NotesOptions = {}): Promise<NoteContent[]> {
+    return parseNotes(await this.call(notesPrompt(topic, parents, s, count, opts), 8192, true), count);
   }
 
-  async overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview> {
+  async overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number, context = ""): Promise<PdfOverview> {
     const content = [
       { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
-      { type: "text", text: pdfOverviewPrompt(pdfName, subfolders, pageOffset) },
+      { type: "text", text: pdfOverviewPrompt(pdfName, subfolders, pageOffset, context) },
     ];
     return parsePdfOverview(await this.call(content, 8192, false), subfolders);
   }

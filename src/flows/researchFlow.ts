@@ -7,6 +7,7 @@ import type { Runner } from "../jobs/queue";
 import { isRetryable } from "../jobs/backoff";
 import { isTriggerName, strippedPath } from "../trigger";
 import { uniqueName } from "../names";
+import { contextToPrompt } from "../context";
 
 export interface Notifier { info(msg: string): void; error(msg: string): void; }
 export interface ResearchDeps {
@@ -124,6 +125,9 @@ export class ResearchFlow {
       return;
     }
 
+    // What sits above and next to the topic: level, fit and duplicates for every prompt of this job.
+    const folderContext = contextToPrompt(await writer.context(job.path));
+
     // Cancel-all may have landed while the checks above were awaiting.
     if (signal.cancelled) { cancelled(); return; }
 
@@ -140,7 +144,7 @@ export class ResearchFlow {
         emit({ kind: "step", text: `Researching ${topic}…` });
       }
       try {
-        outline = await client.outline(topic, parents, s.maxSubfolders);
+        outline = await client.outline(topic, parents, s.maxSubfolders, folderContext);
       } catch (err) {
         if (!progress) throw err;
         if (isRetryable(err)) { retrying(err); throw err; }
@@ -169,7 +173,7 @@ export class ResearchFlow {
       if (signal.cancelled) { cancelled(); return; }
       emit({ kind: "writing", index: i + 1, total: approved.length, name: sub.name });
       try {
-        const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder);
+        const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder, { context: folderContext });
         const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes }, today());
         results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
         written++;
