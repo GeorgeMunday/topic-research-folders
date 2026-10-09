@@ -13,10 +13,10 @@ export interface HubUi {
 }
 
 export interface HubActions {
-  /** Enqueue the research job with `approved` (the reviewed outline is passed for its summary). */
-  startApproved(path: string, approved: SubfolderSuggestion[], outline: Outline): void;
-  cancelJob(kind: Job["kind"], path: string): boolean;
-  retry(path: string): void;
+  /** Enqueue the research job with `approved` (the outline is passed for its summary); false when the queue refused it. */
+  startApproved(path: string, approved: SubfolderSuggestion[], outline: Outline): boolean;
+  /** False when the folder no longer exists in the vault. */
+  pathExists(path: string): boolean;
   persistPending(list: PendingReview[]): void;
 }
 
@@ -26,7 +26,10 @@ export class ProgressHub {
   private tracker = new ProgressTracker();
   private gate = new RunGate();
   private pendingList: PendingReview[] = [];
-  private reviewing = new Set<string>();
+  // Entries whose review modal is open (entries are renamed in place, so this follows renames).
+  private reviewing = new Set<PendingReview>();
+  // Accepted events per path; tells whether a run reported something while it was being started.
+  private seq = new Map<string, number>();
   private noticed = new Set<string>();
   // Last run per path that ended with a failed event (lets a queue failure reuse that run id).
   private lastFailed = new Map<string, { kind: ProgressSource["kind"]; runId: number }>();
@@ -48,6 +51,7 @@ export class ProgressHub {
       return;
     }
     if (!this.gate.accept(path, e, src)) return;
+    this.seq.set(path, (this.seq.get(path) ?? 0) + 1);
     this.tracker.handle(path, e, src);
     if (e.kind === "failed" && src.runId !== undefined) this.lastFailed.set(path, { kind: src.kind, runId: src.runId });
     else if (e.kind === "step" || e.kind === "done") this.lastFailed.delete(path);
@@ -99,41 +103,65 @@ export class ProgressHub {
 
   pending(): PendingReview[] { return this.pendingList.map((p) => ({ ...p })); }
 
+  /** Opens the review for `path` (or the oldest one not being reviewed). Never rejects. */
   review(path?: string): Promise<void> {
     if (this.disposed) return Promise.resolve();
-    const entry = path !== undefined
-      ? this.pendingList.find((p) => p.path === path)
-      : this.pendingList.find((p) => !this.reviewing.has(p.path)) ?? this.pendingList[0];
-    if (!entry) {
-      this.ui.notice("No suggestions are waiting for review.");
+    const problem = (e: unknown) => {
+      if (this.disposed) return;
+      try { this.ui.notice(`Review problem: ${e instanceof Error ? e.message : "unexpected error"}`, { error: true }); } catch { /* ignore */ }
+    };
+    let entry: PendingReview | undefined;
+    let result: Promise<SubfolderSuggestion[] | null>;
+    try {
+      const busy = (p: string) => [...this.reviewing].some((e) => e.path === p);
+      entry = path !== undefined
+        ? this.pendingList.find((p) => p.path === path)
+        : this.pendingList.find((p) => !busy(p.path)) ?? this.pendingList[0];
+      if (!entry) {
+        this.ui.notice("No suggestions are waiting for review.");
+        return Promise.resolve();
+      }
+      if (busy(entry.path)) return Promise.resolve();
+      if (!this.actions.pathExists(entry.path)) { this.forgetMissing(entry); return Promise.resolve(); }
+      this.reviewing.add(entry);
+      result = this.ui.reviewModal(entry.outline);
+    } catch (e) {
+      if (entry) this.reviewing.delete(entry);
+      problem(e);
       return Promise.resolve();
     }
-    if (this.reviewing.has(entry.path)) return Promise.resolve();
-    const target = entry.path;
-    this.reviewing.add(target);
-    let result: Promise<SubfolderSuggestion[] | null>;
-    try { result = this.ui.reviewModal(entry.outline); } catch (e) { result = Promise.reject(e); }
-    return result.then(
-      (approved) => {
-        this.reviewing.delete(target);
-        // Ignore a result for a review that was cancelled or replaced meanwhile.
-        if (this.disposed || !this.pendingList.includes(entry)) return;
-        this.pendingList = this.pendingList.filter((p) => p !== entry);
-        this.actions.persistPending(this.pending());
-        this.pendingRun.delete(target);
-        if (approved && approved.length > 0) {
-          this.gate.cancel(target);
-          this.tracker.handle(target, { kind: "step", text: `Researching ${baseName(target)}…` }, { kind: "research", resumed: false });
-          this.actions.startApproved(target, approved, entry.outline);
-        } else {
-          // The outline run already ended when it was recorded (or was restored from data.json), so any run
-          // the gate or tracker holds for this path now is a newer one (e.g. a re-run): leave it alone.
-          this.ui.notice("Cancelled");
-        }
-        this.refresh();
-      },
-      () => { this.reviewing.delete(target); },
-    );
+    const reviewed = entry;
+    return Promise.resolve(result)
+      .then((approved) => { this.reviewing.delete(reviewed); this.settleReview(reviewed, approved); })
+      .catch((e) => { this.reviewing.delete(reviewed); problem(e); });
+  }
+
+  /** A pending folder was renamed: its review (and any below it) follows the new path. */
+  renamePending(oldPath: string, newPath: string): void {
+    if (this.disposed) return;
+    let changed = false;
+    for (const e of this.pendingList) {
+      const moved = e.path === oldPath ? newPath : e.path.startsWith(`${oldPath}/`) ? newPath + e.path.slice(oldPath.length) : null;
+      if (moved === null) continue;
+      const run = this.pendingRun.get(e.path);
+      this.pendingRun.delete(e.path);
+      if (run !== undefined) this.pendingRun.set(moved, run);
+      e.path = moved; // in place, so an open review still recognises its entry
+      changed = true;
+    }
+    if (!changed) return;
+    this.actions.persistPending(this.pending());
+    this.refresh();
+  }
+
+  /** A pending folder was deleted: drop its review (and any below it) quietly. */
+  dropPending(path: string): void {
+    if (this.disposed) return;
+    const gone = this.pendingList.filter((e) => e.path === path || e.path.startsWith(`${path}/`));
+    if (gone.length === 0) return;
+    for (const e of gone) this.removeEntry(e, false);
+    this.actions.persistPending(this.pending());
+    this.refresh();
   }
 
   cancelAll(): void {
@@ -157,6 +185,46 @@ export class ProgressHub {
   }
 
   dispose(): void { this.disposed = true; }
+
+  private settleReview(entry: PendingReview, approved: SubfolderSuggestion[] | null): void {
+    // Ignore a result for a review that was cancelled, dropped or replaced meanwhile.
+    if (this.disposed || !this.pendingList.includes(entry)) return;
+    const target = entry.path;
+    if (!approved || approved.length === 0) {
+      // The outline run already ended when it was recorded (or was restored from data.json), so any run
+      // the gate or tracker holds for this path now is a newer one (e.g. a re-run): leave it alone.
+      this.removeEntry(entry, true);
+      this.ui.notice("Cancelled");
+      this.refresh();
+      return;
+    }
+    if (!this.actions.pathExists(target)) { this.forgetMissing(entry); return; }
+    // Start first: when a newer run of the folder is queued or running the queue refuses the job, and then
+    // nothing may change (the choice stays pending, the newer run keeps its events and its outline).
+    const seenBefore = this.seq.get(target) ?? 0;
+    if (!this.actions.startApproved(target, approved, entry.outline)) {
+      this.ui.notice(`${baseName(target)} is already being researched — review again when it finishes.`);
+      return;
+    }
+    this.removeEntry(entry, true);
+    // Show progress right away unless the new run already reported (e.g. it failed synchronously).
+    if ((this.seq.get(target) ?? 0) === seenBefore) {
+      this.tracker.handle(target, { kind: "step", text: `Researching ${baseName(target)}…` }, { kind: "research", resumed: false });
+    }
+    this.refresh();
+  }
+
+  private removeEntry(entry: PendingReview, persist: boolean): void {
+    this.pendingList = this.pendingList.filter((p) => p !== entry);
+    this.pendingRun.delete(entry.path);
+    if (persist) this.actions.persistPending(this.pending());
+  }
+
+  private forgetMissing(entry: PendingReview): void {
+    this.removeEntry(entry, true);
+    this.ui.notice(`${baseName(entry.path)} no longer exists, nothing was started.`);
+    this.refresh();
+  }
 
   private recordOutline(path: string, outline: Outline, src: ProgressSource): void {
     const existing = this.pendingList.findIndex((p) => p.path === path);

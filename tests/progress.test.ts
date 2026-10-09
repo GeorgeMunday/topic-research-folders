@@ -87,6 +87,7 @@ describe("noticeFor: pdf source", () => {
   });
   test("failed -> error 'Could not analyse'; neutral failures stay neutral", () => {
     expect(noticeFor("T/paper.pdf", { kind: "failed", error: "boom" }, pdf, pctx)).toEqual({ text: "Could not analyse paper.pdf: boom", error: true });
+    expect(noticeFor("T/paper.pdf", { kind: "failed", error: "the PDF is encrypted." }, pdf, pctx)).toEqual({ text: "Could not analyse paper.pdf: the PDF is encrypted.", error: true });
     expect(noticeFor("T/paper.pdf", { kind: "failed", error: CANCELLED_MESSAGE }, pdf, pctx)).toEqual({ text: CANCELLED_MESSAGE, error: false });
   });
   test("other events -> null", () => {

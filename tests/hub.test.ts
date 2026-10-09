@@ -1,4 +1,4 @@
-import { test, expect, beforeEach } from "vitest";
+import { test, expect, beforeEach, describe } from "vitest";
 import { ProgressHub } from "../src/ui/hub";
 import type { HubUi, HubActions, PendingReview } from "../src/ui/hub";
 import { nextRunId, resetRunIds, CANCELLED_MESSAGE } from "../src/progress";
@@ -19,18 +19,18 @@ function setup() {
     reviewModal: (outline) => new Promise((resolve) => { reviews.push({ outline, resolve }); }),
   };
   const started: [string, SubfolderSuggestion[]][] = [];
-  const cancelled: [string, string][] = [];
-  const retried: string[] = [];
   const persisted: PendingReview[][] = [];
+  const accept = { value: true };
+  const missing = new Set<string>();
+  const hooks: { onStart?: (p: string) => void } = {};
   const actions: HubActions = {
-    startApproved: (p, a) => { started.push([p, a]); },
-    cancelJob: (k, p) => { cancelled.push([k, p]); return true; },
-    retry: (p) => { retried.push(p); },
+    startApproved: (p, a) => { started.push([p, a]); hooks.onStart?.(p); return accept.value; },
+    pathExists: (p) => !missing.has(p),
     persistPending: (l) => { persisted.push(l.map((x) => ({ ...x }))); },
   };
   const hub = new ProgressHub(ui, actions);
   return {
-    hub, notices, statuses, spinners, reviews, started, cancelled, retried, persisted,
+    hub, notices, statuses, spinners, reviews, started, persisted, accept, missing, hooks,
     status: () => (statuses.length ? statuses[statuses.length - 1] : ""),
     spin: () => (spinners.length ? spinners[spinners.length - 1] : []),
   };
@@ -212,7 +212,7 @@ test("review() without a path opens the oldest pending review", async () => {
   expect(h.reviews[1].outline).toEqual(o2);
 });
 
-test("resumed job awaiting review: restorePending shows the notice and spinner, opens no modal, does not call retry or enqueue", () => {
+test("resumed job awaiting review: restorePending shows the notice and spinner, opens no modal, does not enqueue", () => {
   const h = setup();
   const jobs: Job[] = [
     { id: "research:T/B", kind: "research", path: "T/B", done: [], approved: [{ name: "x", why: "y" }] },
@@ -225,8 +225,6 @@ test("resumed job awaiting review: restorePending shows the notice and spinner, 
   expect(h.notices[0].action?.label).toBe("Review");
   expect(h.persisted).toEqual([]);
   expect(h.started).toEqual([]);
-  expect(h.retried).toEqual([]);
-  expect(h.cancelled).toEqual([]);
   expect(h.hub.pending()).toEqual([{ path: T, outline }]);
   expect(h.spin()).toEqual(["T/B", "T/x.pdf", T]);
   expect(h.status()).toBe("Resuming x.pdf… (+1 more)");
@@ -444,4 +442,136 @@ test("fix I2: status after an outline event shows 'Suggestions ready (1)', not '
   h.hub.sink(T, { kind: "outline", outline }, research(id));
   expect(h.status()).toBe("Suggestions ready (1)");
   expect(h.statuses).not.toContain("Choosing folders…");
+});
+
+describe("fix round 1", () => {
+  const BUSY = "Black holes is already being researched — review again when it finishes.";
+  const GONE = "Black holes no longer exists, nothing was started.";
+
+  test("I1: Create while a newer run of the folder is active: startApproved returns false, pending kept, newer run untouched and its outline still becomes the pending review", async () => {
+    const h = setup();
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    const id2 = nextRunId();
+    h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id2)); // a re-run is running
+    h.accept.value = false;
+    const p = h.hub.review(T);
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await p;
+    expect(h.started).toHaveLength(1);
+    expect(h.notices.at(-1)).toEqual({ text: BUSY, error: false, action: undefined });
+    expect(h.hub.pending()).toEqual([{ path: T, outline }]);
+    expect(h.status()).toBe("Researching Black holes…");
+    const outline2: Outline = { ...outline, summary: "newer" };
+    h.hub.sink(T, { kind: "outline", outline: outline2 }, research(id2));
+    expect(h.hub.pending()).toEqual([{ path: T, outline: outline2 }]);
+    expect(h.notices.at(-1)!.text).toBe("Suggestions ready for Black holes");
+    expect(h.spin()).toEqual([T]);
+  });
+
+  test("the approved run may fail synchronously inside startApproved: its notice shows and no spinner is left behind", async () => {
+    const h = setup();
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    h.hooks.onStart = (p) => h.hub.sink(p, { kind: "failed", error: "Add your Claude API key" }, research(nextRunId(), true));
+    const p = h.hub.review(T);
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await p;
+    expect(h.notices.at(-1)).toEqual({ text: "Research failed for Black holes: Add your Claude API key", error: true, action: undefined });
+    expect(h.spin()).toEqual([]);
+    expect(h.status()).toBe("");
+    expect(h.hub.pending()).toEqual([]);
+  });
+
+  test("I2: review of a folder that no longer exists opens no modal, drops the entry and its spinner, neutral notice", async () => {
+    const h = setup();
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    h.missing.add(T);
+    await h.hub.review(T);
+    expect(h.reviews).toHaveLength(0);
+    expect(h.started).toEqual([]);
+    expect(h.notices.at(-1)).toEqual({ text: GONE, error: false, action: undefined });
+    expect(h.hub.pending()).toEqual([]);
+    expect(h.persisted.at(-1)).toEqual([]);
+    expect(h.spin()).toEqual([]);
+  });
+
+  test("I2: folder deleted while the modal is open: Create starts nothing", async () => {
+    const h = setup();
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    const p = h.hub.review(T);
+    h.missing.add(T);
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await p;
+    expect(h.started).toEqual([]);
+    expect(h.notices.at(-1)).toEqual({ text: GONE, error: false, action: undefined });
+    expect(h.hub.pending()).toEqual([]);
+    expect(h.persisted.at(-1)).toEqual([]);
+    expect(h.spin()).toEqual([]);
+  });
+
+  test("renamePending moves the entry (and entries below it), persists, the spinner follows, an open review starts the job at the new path", async () => {
+    const h = setup();
+    const inner = "Topics/Black holes/Anatomy";
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    h.hub.sink(inner, { kind: "outline", outline }, research(nextRunId()));
+    const p = h.hub.review(T);
+    const n = h.persisted.length;
+    h.hub.renamePending(T, "Topics/Holes");
+    expect(h.hub.pending().map((x) => x.path)).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
+    expect(h.persisted).toHaveLength(n + 1);
+    expect(h.persisted.at(-1)!.map((x) => x.path)).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
+    expect(h.spin()).toEqual(["Topics/Holes", "Topics/Holes/Anatomy"]);
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await p;
+    expect(h.started).toEqual([["Topics/Holes", [outline.subfolders[0]]]]);
+    // Renaming an unrelated folder changes nothing and persists nothing.
+    const m = h.persisted.length;
+    h.hub.renamePending("Other", "Else");
+    expect(h.persisted).toHaveLength(m);
+  });
+
+  test("dropPending removes the entry (and entries below it), persists, clears the spinner, shows no notice", async () => {
+    const h = setup();
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    h.hub.sink(`${T}/Anatomy`, { kind: "outline", outline }, research(nextRunId()));
+    h.hub.sink("Stars", { kind: "outline", outline }, research(nextRunId()));
+    const p = h.hub.review(T);
+    const n = h.notices.length;
+    h.hub.dropPending(T);
+    expect(h.hub.pending().map((x) => x.path)).toEqual(["Stars"]);
+    expect(h.persisted.at(-1)!.map((x) => x.path)).toEqual(["Stars"]);
+    expect(h.spin()).toEqual(["Stars"]);
+    expect(h.notices).toHaveLength(n);
+    // The open review's result is ignored.
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await p;
+    expect(h.started).toEqual([]);
+    const m = h.persisted.length;
+    h.hub.dropPending("Nope");
+    expect(h.persisted).toHaveLength(m);
+  });
+
+  test("review() never rejects: a throwing or rejecting modal or a throwing startApproved gives an error notice and the review can be retried", async () => {
+    const h = setup();
+    h.hub.sink(T, { kind: "outline", outline }, research(nextRunId()));
+    const realModal = (h.hub as any).ui.reviewModal;
+    (h.hub as any).ui.reviewModal = () => { throw new Error("no DOM"); };
+    await expect(h.hub.review(T)).resolves.toBeUndefined();
+    expect(h.notices.at(-1)).toMatchObject({ text: "Review problem: no DOM", error: true });
+    (h.hub as any).ui.reviewModal = () => Promise.reject(new Error("closed badly"));
+    await expect(h.hub.review(T)).resolves.toBeUndefined();
+    expect(h.notices.at(-1)).toMatchObject({ text: "Review problem: closed badly", error: true });
+    (h.hub as any).ui.reviewModal = realModal;
+    h.hooks.onStart = () => { throw new Error("queue stopped"); };
+    const p = h.hub.review(T);
+    h.reviews[0].resolve([outline.subfolders[0]]);
+    await expect(p).resolves.toBeUndefined();
+    expect(h.notices.at(-1)).toMatchObject({ text: "Review problem: queue stopped", error: true });
+    expect(h.hub.pending()).toHaveLength(1);
+    h.hooks.onStart = undefined;
+    const q = h.hub.review(T);
+    expect(h.reviews).toHaveLength(2);
+    h.reviews[1].resolve(null);
+    await q;
+    expect(h.hub.pending()).toEqual([]);
+  });
 });

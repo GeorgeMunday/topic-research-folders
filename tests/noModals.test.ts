@@ -51,9 +51,8 @@ test("no session or modal object is created for any progress event: loading, pro
     reviewModal: () => { calls.push("reviewModal"); return Promise.resolve(null); },
   };
   const hub = new ProgressHub(ui, {
-    startApproved: () => { calls.push("startApproved"); },
-    cancelJob: () => { calls.push("cancelJob"); return true; },
-    retry: () => { calls.push("retry"); },
+    startApproved: () => { calls.push("startApproved"); return true; },
+    pathExists: () => true,
     persistPending: () => { calls.push("persist"); },
   });
   const outline: Outline = { topic: "T", summary: "s", subfolders: [{ name: "A", why: "w" }] };

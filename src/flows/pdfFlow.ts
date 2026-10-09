@@ -201,8 +201,11 @@ export class PdfFlow {
     const src = { kind: "pdf" as const, resumed: false, runId };
     const emit = (e: Progress) => this.deps.progress?.(job.path, e, src);
     const fail = (error: string) => emit({ kind: "failed", error });
-    // Outcomes go only through the sink when there is one (the hub shows the notice); otherwise a notice.
-    const report = (msg: string) => { if (this.deps.progress) fail(msg); else notify.error(msg); };
+    // Outcomes go only through the sink when there is one: the failed event carries the bare reason and the
+    // hub adds "Could not analyse <file>: ". Without a sink the full message is a notice (`plain` overrides it).
+    const report = (reason: string, plain = `Could not analyse ${baseName(job.path)}: ${reason}`) => {
+      if (this.deps.progress) fail(reason); else notify.error(plain);
+    };
     // Cached chunk results survive only a retryable failure; every other exit clears them.
     let keep = false;
     try {
@@ -210,11 +213,11 @@ export class PdfFlow {
       emit({ kind: "step", text: `Preparing ${file}…` });
       const client = this.deps.client();
       if (!client || !settings().apiKey.trim()) {
-        report("Add your Claude API key in the plugin settings before analysing PDFs.");
+        report("no Claude API key — add it in the plugin settings", "Add your Claude API key in the plugin settings before analysing PDFs.");
         return;
       }
       const root = await writer.findResearchRoot(job.path);
-      if (!root) { fail("Not inside a research folder"); return; }
+      if (!root) { fail("it is not inside a researched folder"); return; }
       const subfolders = writer.listSubfolders(root.root).filter((n) => !RESERVED.has(n.toLowerCase()));
 
       let split: Awaited<ReturnType<typeof splitPdf>>;
@@ -222,7 +225,7 @@ export class PdfFlow {
         split = await splitPdf(bytes, settings().pdfPagesPerChunk, MAX_CHUNK_BYTES);
       } catch (e) {
         if (e instanceof PdfError) {
-          report(`Could not analyse ${file}: the PDF is ${e.reason}.`);
+          report(`the PDF is ${e.reason}.`);
           return;
         }
         fail(e instanceof Error ? e.message : String(e));
@@ -231,7 +234,7 @@ export class PdfFlow {
       if (split.skippedPages.length > 0) {
         notify.error(`${file}: skipped page${split.skippedPages.length === 1 ? "" : "s"} ${split.skippedPages.join(", ")} (too large to send).`);
       }
-      if (split.chunks.length === 0) { fail("No pages to send"); return; }
+      if (split.chunks.length === 0) { fail("it has no pages that can be sent"); return; }
 
       let done = this.chunkCache.get(hash);
       if (!done) { done = new Map(); this.chunkCache.set(hash, done); }
@@ -248,7 +251,7 @@ export class PdfFlow {
           results.push(r);
         } catch (e) {
           if (isRetryable(e)) { keep = true; if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); } throw e; }
-          report(`Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`);
+          report(e instanceof Error ? e.message : String(e));
           return;
         }
       }

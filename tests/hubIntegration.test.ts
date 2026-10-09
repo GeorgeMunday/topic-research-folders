@@ -68,10 +68,17 @@ function world() {
   // eslint-disable-next-line prefer-const
   let flow: ResearchFlow;
   const added: Job[] = [];
+  const attempts: string[] = [];
   const actions: HubActions = {
-    startApproved: (path, approved, outline) => { const j: Job = { id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary }; added.push(j); queue.add(j); },
-    cancelJob: (k, p) => queue.cancelJob(k, p),
-    retry: (p) => { void flow.researchFolder(p); },
+    // Mirrors main.ts: the job is recorded in `added` only when the queue accepted it.
+    startApproved: (path, approved, outline) => {
+      attempts.push(path);
+      const j: Job = { id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary };
+      const ok = queue.add(j);
+      if (ok) added.push(j);
+      return ok;
+    },
+    pathExists: (p) => v.folders.has(p),
     persistPending: (l) => { persisted.push(l.map((x) => ({ ...x }))); },
   };
   const hub = new ProgressHub(ui, actions);
@@ -96,7 +103,7 @@ function world() {
   flow = new ResearchFlow(deps);
   flow.markReady();
   return {
-    v, hub, queue, flow, calls, notices, spinners, statuses, reviews, persisted, added, flowNotices,
+    v, hub, queue, flow, calls, notices, spinners, statuses, reviews, persisted, added, attempts, flowNotices,
     spin: () => (spinners.length ? spinners[spinners.length - 1] : []),
     status: () => (statuses.length ? statuses[statuses.length - 1] : ""),
     /** Runs a fresh research job for T until its outline is pending. */
@@ -279,4 +286,101 @@ test("closing an outdated modal while the re-run for the same folder is running:
   expect(w.hub.pending()).toHaveLength(1);
   expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
   expect(w.spin()).toEqual([T]);
+});
+
+// Fix round 1.
+const BUSY = "T is already being researched — review again when it finishes.";
+
+test("I1: Create while a newer run of the folder is running: no job is lost; the choice stays pending and the newer outline becomes the pending review", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const client = (w.flow as any).deps.client();
+  const realOutline = client.outline.bind(client);
+  client.outline = async (topic: string) => { await hold; return realOutline(topic); };
+  (w.flow as any).deps.client = () => client;
+  await w.flow.researchFolder(T, { force: true });
+  await flush(); // the re-run is running, waiting for its outline
+  w.reviews[0].resolve([A]);
+  await p;
+  expect(w.attempts).toEqual([T]);
+  expect(w.added).toEqual([]);
+  expect(w.notices.at(-1)).toEqual({ text: BUSY, error: false, action: undefined });
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.spin()).toEqual([T]);
+  release();
+  await w.queue.idle();
+  expect(w.calls.outline).toBe(2);
+  expect(w.notices.filter((n) => n.text === "Suggestions ready for T")).toHaveLength(2);
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.spin()).toEqual([T]);
+  expect(w.calls.notes).toEqual([]);
+});
+
+test("I1: Create while a newer run of the folder is only queued: same outcome", async () => {
+  const w = world();
+  await w.outline();
+  const p = w.hub.review(T);
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const real = w.flow.run;
+  (w.flow as any).run = async (job: Job, signal: { cancelled: boolean }, cp: (j: Job) => Promise<void>) => {
+    if (job.path === "U") { await hold; return; }
+    return real(job, signal, cp);
+  };
+  w.v.folders.add("U");
+  w.queue.add({ id: "research:U", kind: "research", path: "U", done: [] });
+  await w.flow.researchFolder(T, { force: true });
+  w.reviews[0].resolve([A]);
+  await p;
+  expect(w.added).toEqual([]);
+  expect(w.notices.at(-1)).toEqual({ text: BUSY, error: false, action: undefined });
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.spin()).toContain(T);
+  release();
+  await w.queue.idle();
+  expect(w.calls.outline).toBe(2);
+  expect(w.hub.pending()).toHaveLength(1);
+  expect(w.spin()).toEqual([T]);
+  expect(w.calls.notes).toEqual([]);
+});
+
+test("I2: a pending review whose folder was deleted: Review opens no modal and nothing is written or requested", async () => {
+  const w = world();
+  await w.outline();
+  w.v.folders.delete(T);
+  await w.hub.review(T);
+  await w.queue.idle();
+  expect(w.reviews).toHaveLength(0);
+  expect(w.attempts).toEqual([]);
+  expect(w.v.folders.has(T)).toBe(false);
+  expect(w.calls.notes).toEqual([]);
+  expect(w.notices.at(-1)!.text).toBe("T no longer exists, nothing was started.");
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.spin()).toEqual([]);
+});
+
+test("restart: a saved pending review is restored without a new outline request or modal; Review -> Create runs the approved job", async () => {
+  const w = world();
+  const saved = [{ path: T, outline: { topic: T, summary: "saved", subfolders: [A, B] } }];
+  w.hub.restorePending(saved, []);
+  w.queue.restore([]);
+  await w.queue.idle();
+  expect(w.calls.outline).toBe(0);
+  expect(w.reviews).toHaveLength(0);
+  expect(w.notices.map((n) => n.text)).toEqual(["Suggestions ready for T"]);
+  expect(w.spin()).toEqual([T]);
+  w.notices[0].action!.run();
+  expect(w.reviews).toHaveLength(1);
+  w.reviews[0].resolve([B]);
+  await flush();
+  await w.queue.idle();
+  expect(w.calls.outline).toBe(0);
+  expect(w.calls.notes).toEqual(["B"]);
+  expect(w.v.files.get("T/T - Overview.md")).toContain("> saved");
+  expect(w.notices.at(-1)!.text).toBe("Researched T: 1 folder, 1 note");
+  expect(w.hub.pending()).toEqual([]);
+  expect(w.spin()).toEqual([]);
 });

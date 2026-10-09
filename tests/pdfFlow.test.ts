@@ -644,7 +644,7 @@ describe("progress events", () => {
     await e1.c.flow.run(job("Topic/secret.pdf"), noSignal, noCp);
     expect(e1.kinds()).toEqual([
       { kind: "step", text: "Preparing secret.pdf…" },
-      { kind: "failed", error: "Could not analyse secret.pdf: the PDF is encrypted." },
+      { kind: "failed", error: "the PDF is encrypted." },
     ]);
     expect(e1.c.errors).toEqual([]); // with a sink the hub shows the notice
 
@@ -665,7 +665,7 @@ describe("progress events", () => {
     await a.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(a.kinds()).toEqual([
       { kind: "step", text: "Preparing a.pdf…" },
-      { kind: "failed", error: "Add your Claude API key in the plugin settings before analysing PDFs." },
+      { kind: "failed", error: "no Claude API key — add it in the plugin settings" },
     ]);
 
     const b = withSink();
@@ -673,14 +673,14 @@ describe("progress events", () => {
     await b.c.flow.run(job("Other/a.pdf"), noSignal, noCp);
     expect(b.kinds()).toEqual([
       { kind: "step", text: "Preparing a.pdf…" },
-      { kind: "failed", error: "Not inside a research folder" },
+      { kind: "failed", error: "it is not inside a researched folder" },
     ]);
 
     const d = withSink();
     d.c.files.set("Topic/a.pdf", pdf1);
     d.c.extract.mockRejectedValue(new ApiError("bad request", 400));
     await d.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(d.kinds().at(-1)).toEqual({ kind: "failed", error: "Could not analyse a.pdf: bad request" });
+    expect(d.kinds().at(-1)).toEqual({ kind: "failed", error: "bad request" });
   });
 
   test("already processed pdf emits nothing", async () => {
@@ -778,12 +778,12 @@ describe("Task 16: outcomes go only through the sink when one exists", () => {
     // encrypted
     const b = withSink(); b.c.files.set("Topic/s.pdf", encrypted);
     await b.c.flow.run(job("Topic/s.pdf"), noSignal, noCp);
-    expect(b.events.at(-1)).toEqual({ kind: "failed", error: "Could not analyse s.pdf: the PDF is encrypted." });
+    expect(b.events.at(-1)).toEqual({ kind: "failed", error: "the PDF is encrypted." });
     expect([...b.c.errors, ...b.c.infos]).toEqual([]);
     // non-retryable chunk error
     const d = withSink(); d.c.files.set("Topic/a.pdf", pdf1); d.c.extract.mockRejectedValue(new ApiError("bad request", 400));
     await d.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(d.events.at(-1)).toEqual({ kind: "failed", error: "Could not analyse a.pdf: bad request" });
+    expect(d.events.at(-1)).toEqual({ kind: "failed", error: "bad request" });
     expect([...d.c.errors, ...d.c.infos]).toEqual([]);
     // success
     const e = withSink(); e.c.files.set("Topic/a.pdf", pdf1);
@@ -804,5 +804,28 @@ describe("Task 16: outcomes go only through the sink when one exists", () => {
     const ne = setup(); ne.files.set("Topic/a.pdf", pdf1);
     await ne.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(ne.infos).toEqual(["Extracted 1 notes from a.pdf"]);
+  });
+});
+
+describe("fix round 1: pdf failure notices carry one prefix", () => {
+  test("hub-level: an encrypted PDF gives exactly 'Could not analyse s.pdf: the PDF is encrypted.'; a missing key and an API error read cleanly too", async () => {
+    const { ProgressHub } = await import("../src/ui/hub");
+    const notices: string[] = [];
+    const hub = new ProgressHub(
+      { notice: (t) => { notices.push(t); }, setStatus: () => {}, setSpinners: () => {}, reviewModal: async () => null },
+      { startApproved: () => true, pathExists: () => true, persistPending: () => {} },
+    );
+    const a = setup(); (a.flow as any).deps.progress = hub.sink; a.files.set("Topic/s.pdf", encrypted);
+    await a.flow.run(job("Topic/s.pdf"), noSignal, noCp);
+    const b = setup(); (b.flow as any).deps.progress = hub.sink; b.files.set("Topic/k.pdf", pdf1); b.client.v = null;
+    await b.flow.run(job("Topic/k.pdf"), noSignal, noCp);
+    const c = setup(); (c.flow as any).deps.progress = hub.sink; c.files.set("Topic/e.pdf", pdf1); c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    await c.flow.run(job("Topic/e.pdf"), noSignal, noCp);
+    expect(notices).toEqual([
+      "Could not analyse s.pdf: the PDF is encrypted.",
+      "Could not analyse k.pdf: no Claude API key — add it in the plugin settings",
+      "Could not analyse e.pdf: bad request",
+    ]);
+    expect([...a.errors, ...b.errors, ...c.errors]).toEqual([]);
   });
 });

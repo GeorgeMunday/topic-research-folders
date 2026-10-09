@@ -155,11 +155,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         },
       },
       {
-        startApproved: (path, approved, outline) => {
-          queue.add({ id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary });
-        },
-        cancelJob: (kind, path) => queue.cancelJob(kind, path),
-        retry: (path) => guard(researchFlow.researchFolder(path)),
+        startApproved: (path, approved, outline) =>
+          queue.add({ id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary }),
+        pathExists: (path) => vault.getAbstractFileByPath(path) != null,
         persistPending: (list) => {
           this.data.pendingReviews = list;
           guard(this.persist());
@@ -263,8 +261,11 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       else if (f instanceof TFile && isPdfPath(f.path) && settings().processPdfs) guard(pdfFlow.onFileEvent(f.path));
     };
     this.registerEvent(vault.on("create", onCreated));
+    // A pending review follows its folder when it is renamed and goes away (quietly) when it is deleted.
+    this.registerEvent(vault.on("delete", (f) => { if (f instanceof TFolder) hub.dropPending(f.path); }));
     this.registerEvent(vault.on("rename", (f, oldPath) => {
-      const d = decideRename({ isFolder: f instanceof TFolder, oldPath, newPath: f.path, processed: this.data.processedPdfs });
+      if (f instanceof TFolder) hub.renamePending(oldPath, f.path);
+      const d =decideRename({ isFolder: f instanceof TFolder, oldPath, newPath: f.path, processed: this.data.processedPdfs });
       if (d.action === "folder-event") guard(researchFlow.onFolderEvent(d.path));
       else if (d.action === "update-processed") {
         const e = this.data.processedPdfs[d.hash];
