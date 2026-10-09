@@ -84,6 +84,7 @@ describe("noticeFor: pdf source", () => {
   test("done -> overview ready with the key point count (singular and plural)", () => {
     expect(noticeFor("T/paper.pdf", { kind: "done", folders: 3, notes: 9 }, pdf, pctx)).toEqual({ text: "Overview ready for paper.pdf — researching 3 key points", error: false });
     expect(noticeFor("T/paper.pdf", { kind: "done", folders: 1, notes: 2 }, pdf, pctx)).toEqual({ text: "Overview ready for paper.pdf — researching 1 key point", error: false });
+    expect(noticeFor("T/paper.pdf", { kind: "done", folders: 0, notes: 1 }, pdf, pctx)).toEqual({ text: "Overview ready for paper.pdf (no distinct key points found)", error: false });
   });
   test("failed -> error 'Could not analyse'; neutral failures stay neutral", () => {
     expect(noticeFor("T/paper.pdf", { kind: "failed", error: "boom" }, pdf, pctx)).toEqual({ text: "Could not analyse paper.pdf: boom", error: true });

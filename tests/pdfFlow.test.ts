@@ -3,6 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import { PdfFlow, markResumed, type PdfDeps } from "../src/flows/pdfFlow";
 import { VaultWriter, type VaultLike } from "../src/vault/writer";
 import { ApiError, JobQueue } from "../src/jobs/queue";
+import { ParseError } from "../src/research/parse";
 import { sha256 } from "../src/pdf/chunk";
 import type { Job, KeyPoint, PdfOverview } from "../src/types";
 import type { Settings } from "../src/settings";
@@ -1109,5 +1110,110 @@ describe("fix round 1: trigger-time failures through the real hub", () => {
     b.files.set("Topic/s.pdf", encrypted);
     await b.flow.run(job("Topic/s.pdf"), noSignal, noCp);
     expect(t.at(-1)).toEqual(r.at(-1));
+  });
+});
+
+describe("Task 18 fix round 1: stage 1 robustness", () => {
+  function withSink(over: Partial<Settings> = {}) {
+    const c = setup(over);
+    const events: Progress[] = [];
+    (c.flow as any).deps.progress = (_p: string, e: Progress) => { events.push(e); };
+    return { c, events };
+  }
+
+  test("a cancel that lands while the overview is written queues no key point jobs and marks nothing", async () => {
+    const { c, events } = withSink();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.overview.mockResolvedValue(ov("One", "Two"));
+    const sig = { cancelled: false };
+    const real = c.writer.writePdfOverview;
+    c.writer.writePdfOverview = async (...a) => { const r = await real(...a); sig.cancelled = true; return r; };
+    await c.flow.run(job("Topic/a.pdf"), sig, noCp);
+    expect(c.enqueued).toEqual([]);
+    expect(c.marked).toEqual([]);
+    expect(events.at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+  });
+
+  test("the hash is marked processed only when every key point job was accepted by the queue", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.overview.mockResolvedValue(ov("One", "Two"));
+    let n = 0;
+    (c.flow as any).deps.enqueue = (j: Job) => { c.enqueued.push(j); return ++n !== 2; };
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.enqueued).toHaveLength(2);
+    expect(c.marked).toEqual([]);
+    expect([...c.errors, ...c.infos]).toEqual([]);
+  });
+
+  test("a write error is not retried (writes are not idempotent): failed with the bare reason, no rethrow, chunk cache cleared", async () => {
+    const { c, events } = withSink({ pdfPagesPerChunk: 1 });
+    c.files.set("Topic/a.pdf", pdf3);
+    c.overview.mockImplementation(async (...a: any[]) => ov(`N${a[3]}`));
+    const real = c.writer.writePdfOverview;
+    let fails = 1;
+    c.writer.writePdfOverview = async (...a) => { if (fails-- > 0) throw new ApiError("vault busy", 503); return real(...a); };
+    await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).resolves.toBeUndefined();
+    expect(events.at(-1)).toEqual({ kind: "failed", error: "vault busy" });
+    expect(c.enqueued).toEqual([]);
+    c.overview.mockClear();
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+  });
+
+  test("stripSuffix off: container, topic and overview title use the clean stem (no trailing suffix); the source link names the real file", async () => {
+    const c = setup({ stripSuffix: false });
+    drop(c, "Docs/paper+.pdf", pdf1);
+    c.overview.mockResolvedValue(ov("Alpha"));
+    await c.flow.run(job("Docs/paper+.pdf"), noSignal, noCp);
+    expect(c.overview.mock.calls[0][0]).toBe("paper");
+    const md = c.vault.files.get("Docs/paper/paper - Overview.md")!;
+    expect(md).toContain("# paper - Overview");
+    expect(md).toContain('topic: "paper"');
+    expect(md).toContain('source: "[[paper+.pdf]]"');
+    expect(c.enqueued).toMatchObject([{ kind: "keypoint", folder: "Docs/paper/Alpha", topic: "paper", pdfName: "paper+.pdf" }]);
+    const r = setup({ stripSuffix: false });
+    drop(r, "Topic/notes.pdf+", pdf1);
+    await r.flow.run(job("Topic/notes.pdf+"), noSignal, noCp);
+    expect(r.vault.files.has("Topic/Sources/notes - Overview.md")).toBe(true);
+  });
+
+  test("several chunks: empty chunk results are skipped as merge candidates; one non-empty result is used without a merge", async () => {
+    const c = setup({ pdfPagesPerChunk: 1 });
+    c.files.set("Topic/a.pdf", pdf3);
+    const results = [ov("A"), { ...ov(), summary: "" }, ov("C")];
+    c.overview.mockImplementation(async (...a: any[]) => results[a[3]]);
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.merge).toHaveBeenCalledTimes(1);
+    expect(c.merge.mock.calls[0][1].map((r: PdfOverview) => r.keyPoints[0].name)).toEqual(["A", "C"]);
+
+    const one = setup({ pdfPagesPerChunk: 1 });
+    one.files.set("Topic/a.pdf", pdf3);
+    const res1 = [{ ...ov(), summary: "" }, ov("Only"), { ...ov(), summary: "tail" }];
+    one.overview.mockImplementation(async (...a: any[]) => res1[a[3]]);
+    await one.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(one.merge).not.toHaveBeenCalled();
+    expect(one.enqueued.map((j) => j.kind === "keypoint" && j.point.name)).toEqual(["Only"]);
+
+    const none = setup({ pdfPagesPerChunk: 1 });
+    none.files.set("Topic/a.pdf", pdf3);
+    const res0 = [{ ...ov(), summary: "" }, { ...ov(), summary: "Second part." }, ov()];
+    none.overview.mockImplementation(async (...a: any[]) => res0[a[3]]);
+    await none.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(none.merge).not.toHaveBeenCalled();
+    expect(none.enqueued).toEqual([]);
+    expect(none.vault.files.get("Topic/Sources/a - Overview.md")).toContain("> Second part.");
+  });
+
+  test("a merge that returns unparseable JSON falls back to the first 5 candidate points in chunk order with the first non-empty summary", async () => {
+    const c = setup({ pdfPagesPerChunk: 1 });
+    c.files.set("Topic/a.pdf", pdf3);
+    const results = [{ ...ov("A", "B", "C"), summary: "" }, { ...ov("D", "E", "F"), summary: "Middle." }, ov("G")];
+    c.overview.mockImplementation(async (...a: any[]) => results[a[3]]);
+    c.merge.mockRejectedValue(new ParseError("Invalid JSON"));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.enqueued.map((j) => j.kind === "keypoint" && j.point.name)).toEqual(["A", "B", "C", "D", "E"]);
+    expect(c.vault.files.get("Topic/Sources/a - Overview.md")).toContain("> Middle.");
+    expect(c.errors).toEqual([]);
   });
 });

@@ -91,10 +91,10 @@ export function renderOverview(
 
 /** The PDF overview (Stage 1): one bullet per key point linking its entry note; never padded. */
 export function renderPdfOverview(
-  o: { pdfName: string; overview: PdfOverview; links: { point: KeyPoint; target: string }[]; asRoot: boolean },
+  o: { pdfName: string; overview: PdfOverview; links: { point: KeyPoint; target: string }[]; asRoot: boolean; stem?: string },
   date: string,
 ): string {
-  const stem = o.pdfName.replace(/\.pdf$/i, "");
+  const stem = o.stem ?? o.pdfName.replace(/\.pdf$/i, "");
   const frontmatter = [
     "---",
     `topic: ${yamlString(stem)}`,
@@ -107,7 +107,7 @@ export function renderPdfOverview(
 
   // `|` and brackets would end the wikilink early.
   const alias = (s: string) => oneLine(s.replace(/[|[\]]/g, " "));
-  const bullets = o.links.map((l) => `- ${oneLine(l.point.text)} → [[${oneLine(l.target)}|${alias(l.point.name)}]]`);
+  const bullets = o.links.map((l) => `- ${oneLine(l.point.text)} → [[${l.target}|${alias(l.point.name)}]]`);
 
   const body = [
     `# ${oneLine(stem)} - Overview`,

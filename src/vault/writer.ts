@@ -144,12 +144,14 @@ export class VaultWriter {
     container: string;
     asRoot: boolean;
     pdfName: string;
+    /** Title stem for the overview and its notes (defaults to the file name without .pdf). */
+    stem?: string;
     overview: PdfOverview;
     existingSubfolders: string[];
     date: string;
   }): Promise<{ overviewPath: string; entries: { folder: string; entryPath: string; point: KeyPoint }[] }> {
     const { asRoot, pdfName, overview, date } = args;
-    const stem = sanitiseName(pdfName.replace(/\.pdf$/i, ""));
+    const stem = sanitiseName(args.stem ?? pdfName.replace(/\.pdf$/i, ""));
     let container: string;
     if (asRoot) {
       const i = args.container.lastIndexOf("/");
@@ -187,11 +189,14 @@ export class VaultWriter {
     const overviewName = uniqueName(`${stem} - Overview`, (c) => this.taken(target, `${c}.md`));
     const overviewPath = join(target, `${overviewName}.md`);
     const links = entries.map((e) => ({ point: e.point, target: e.entryPath.slice(0, -3) }));
-    await this.vault.createFile(overviewPath, renderPdfOverview({ pdfName, overview, links, asRoot }, date));
+    await this.vault.createFile(overviewPath, renderPdfOverview({ pdfName, overview, links, asRoot, stem }, date));
     return { overviewPath, entries };
   }
 
-  /** Stage 2: the researched notes of one key point, written into its existing folder (never overwriting). */
+  /**
+   * Stage 2: the researched notes of one key point, written into its folder (never overwriting). The folder is
+   * resolved case-insensitively and recreated (recorded for consumeCreated) if the user removed it meanwhile.
+   */
   async writeKeypointNotes(
     folder: string,
     topic: string,
@@ -199,6 +204,7 @@ export class VaultWriter {
     notes: NoteContent[],
     date: string,
   ): Promise<{ noteTitles: string[] }> {
+    folder = await this.ensureFolder(folder);
     const used = new Set<string>();
     const noteTitles: string[] = [];
     for (const note of notes) {

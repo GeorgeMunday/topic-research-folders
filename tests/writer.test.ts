@@ -354,6 +354,7 @@ describe("writePdfOverview inside a research root", () => {
 describe("writeKeypointNotes", () => {
   test("writes the notes into the existing folder with unique names, never overwriting", async () => {
     const v = new MemVault();
+    v.folders.add("paper");
     v.folders.add("paper/Fusion");
     v.files.set("paper/Fusion/Fusion.md", "ENTRY");
     const w = new VaultWriter(v);
@@ -363,6 +364,19 @@ describe("writeKeypointNotes", () => {
     const md = v.files.get("paper/Fusion/How - stars burn.md")!;
     expect(md).toContain('topic: "paper"\nsubtopic: "Fusion"');
     expect(md).toContain("## Questions & Answers");
-    expect([...v.folders]).toEqual(["paper/Fusion"]);
+    expect([...v.folders]).toEqual(["paper", "paper/Fusion"]);
   });
+});
+
+test("writeKeypointNotes recreates a missing folder (recorded for consumeCreated) and reuses an existing one case-insensitively", async () => {
+  const v = new MemVault();
+  v.folders.add("paper");
+  v.folders.add("paper/Fusion");
+  const w = new VaultWriter(v);
+  await w.writeKeypointNotes("paper/Gone", "paper", "Gone", [note("A")], DATE);
+  expect(v.folders.has("paper/Gone")).toBe(true);
+  expect(w.consumeCreated("paper/Gone")).toBe(true);
+  await w.writeKeypointNotes("paper/fusion", "paper", "Fusion", [note("B")], DATE);
+  expect(v.files.has("paper/Fusion/B.md")).toBe(true);
+  expect(v.folders.has("paper/fusion")).toBe(false);
 });

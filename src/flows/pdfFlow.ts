@@ -9,6 +9,7 @@ import { CANCELLED_MESSAGE, nextRunId, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
 import { containerFor, pdfTriggerName } from "../pdf/trigger";
 import { uniqueName } from "../names";
+import { ParseError } from "../research/parse";
 
 /** Marks pdf jobs restored from data.json: only those may be skipped because their content was processed before. */
 export function markResumed(jobs: Job[]): Job[] {
@@ -47,6 +48,17 @@ const RESERVED = new Set(["from pdfs", "sources"]);
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const parentOf = (p: string) => (p.lastIndexOf("/") >= 0 ? p.slice(0, p.lastIndexOf("/")) : "");
+const MAX_KEY_POINTS = 5;
+const firstText = (xs: string[]) => xs.find((x) => x.trim() !== "") ?? "";
+
+/** Used when the merge answer cannot be parsed: the first 5 candidate points in chunk order. */
+function fallbackMerge(candidates: PdfOverview[]): PdfOverview {
+  return {
+    summary: firstText(candidates.map((c) => c.summary)),
+    plainWords: firstText(candidates.map((c) => c.plainWords)),
+    keyPoints: candidates.flatMap((c) => c.keyPoints).slice(0, MAX_KEY_POINTS),
+  };
+}
 
 export class PdfFlow {
   private ready = false;
@@ -139,7 +151,15 @@ export class PdfFlow {
   /** Decides where the output of the PDF at `pdfPath` goes. */
   async plan(pdfPath: string): Promise<PdfPlan> {
     const root = await this.deps.writer.findResearchRoot(pdfPath);
-    return { ...containerFor(pdfPath, root), root };
+    // With stripSuffix off the file keeps its trigger name (`paper+.pdf`): the container uses the clean stem.
+    const dir = parentOf(pdfPath);
+    const clean = this.cleanName(baseName(pdfPath));
+    return { ...containerFor(dir ? `${dir}/${clean}` : clean, root), root };
+  }
+
+  /** The file name without the trigger suffix (`paper+.pdf` / `paper.pdf+` -> `paper.pdf`); unchanged otherwise. */
+  private cleanName(file: string): string {
+    return pdfTriggerName(file, this.deps.settings().triggerSuffix)?.clean ?? file;
   }
 
   /** Forget cached chunk results for one job path (or all, with no argument), e.g. when a job is dropped. */
@@ -194,7 +214,8 @@ export class PdfFlow {
       const plan = await this.plan(job.path);
       const root = plan.root;
       const subfolders = root ? writer.listSubfolders(root.root).filter((n) => !RESERVED.has(n.toLowerCase())) : [];
-      const stem = file.replace(/\.pdf$/i, "");
+      // The title stem never carries the trigger suffix (the file keeps it when stripSuffix is off).
+      const stem = this.cleanName(file).replace(/\.pdf$/i, "");
       const retrying = (e: unknown) => {
         if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); }
         return e;
@@ -237,41 +258,53 @@ export class PdfFlow {
         }
       }
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
+      if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
       let overview: PdfOverview;
-      if (results.length === 1) {
-        overview = results[0];
+      // Chunks without key points (front matter, references…) are not merge candidates.
+      const candidates = results.filter((r) => r.keyPoints.length > 0);
+      if (results.length === 1 || candidates.length <= 1) {
+        overview = candidates[0] ?? { ...results[0], summary: firstText(results.map((r) => r.summary)) };
       } else {
         // A text-only call picks the top 5 key points of the whole document from every chunk's candidates.
         emit({ kind: "step", text: "Picking the top 5 key points…" });
         try {
-          overview = await client.mergeOverviews(stem, results);
+          overview = await client.mergeOverviews(stem, candidates);
         } catch (e) {
           if (isRetryable(e)) { keep = true; throw retrying(e); }
-          report(e instanceof Error ? e.message : String(e));
-          return;
+          // An unreadable merge answer: keep the candidates in chunk order instead of losing the whole run.
+          if (e instanceof ParseError) overview = fallbackMerge(candidates);
+          else { report(e instanceof Error ? e.message : String(e)); return; }
         }
       }
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
       let written: Awaited<ReturnType<typeof writer.writePdfOverview>>;
       try {
         written = await writer.writePdfOverview({
-          container: plan.container, asRoot: plan.asRoot, pdfName: file, overview, existingSubfolders: subfolders, date: today(),
+          container: plan.container, asRoot: plan.asRoot, pdfName: file, stem, overview, existingSubfolders: subfolders, date: today(),
         });
       } catch (e) {
-        if (isRetryable(e)) retrying(e);
-        else fail(e instanceof Error ? e.message : String(e));
-        throw e;
+        // Not retried even when the error looks temporary: the writes are not idempotent (a retry would make
+        // `paper (2)` and duplicate entry notes).
+        report(e instanceof Error ? e.message : String(e));
+        return;
       }
+      // Cancel all may have landed while writing: queue no fresh jobs.
+      if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
       // Stage 2: one queued job per key point (each researched on its own; one failure never stops the others).
       const parents = root ? [...root.parents, root.topic] : [];
+      let allQueued = true;
       for (const entry of written.entries) {
-        enqueue({
+        const ok = enqueue({
           id: `keypoint:${entry.entryPath}`, kind: "keypoint", path: entry.entryPath, folder: entry.folder,
           pdfName: file, topic: stem, parents: [...parents], docSummary: overview.summary, point: entry.point,
         });
+        if (!ok) allQueued = false;
       }
-      // The jobs are queued: a failure to record the hash must not retry the run (it would duplicate them).
-      try { await markProcessed(hash, job.path); } catch { /* the overview is written; only a later restore is affected */ }
+      // Recorded only when every key point job was accepted. The jobs are queued: a failure to record the hash
+      // must not retry the run (it would duplicate them).
+      if (allQueued) {
+        try { await markProcessed(hash, job.path); } catch { /* the overview is written; only a later restore is affected */ }
+      }
       // The hub turns `done` into "Overview ready for <file> — researching N key points".
       emit({ kind: "done", folders: written.entries.length, notes: 1 });
     } finally {

@@ -88,6 +88,7 @@ export function noticeFor(
   ctx: { topic: string },
 ): { text: string; error: boolean } | null {
   if (src.kind === "pdf") {
+    if (e.kind === "done" && e.folders === 0) return { text: `Overview ready for ${baseName(path)} (no distinct key points found)`, error: false };
     if (e.kind === "done") return { text: `Overview ready for ${baseName(path)} — researching ${plural(e.folders, "key point")}`, error: false };
     if (e.kind === "failed") {
       if (isNeutralMessage(e.error)) return { text: e.error, error: false };

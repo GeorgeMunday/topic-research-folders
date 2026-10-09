@@ -156,3 +156,8 @@ test("renderPdfOverview: an alias cannot break the wikilink", () => {
   const md = renderPdfOverview({ pdfName: "p.pdf", overview: pdfOv, asRoot: true, links: [{ point: kp("A|B]]x", 1), target: "p/A B x/A B x" }] }, "2026-10-08");
   expect(md).toContain("→ [[p/A B x/A B x|A B x]]");
 });
+
+test("renderPdfOverview keeps the link target exactly as the path (a double space in a folder name survives)", () => {
+  const md = renderPdfOverview({ pdfName: "p.pdf", overview: pdfOv, asRoot: true, links: [{ point: kp("A  B", 1), target: "p/A  B/A  B" }] }, "2026-10-08");
+  expect(md).toContain("→ [[p/A  B/A  B|A B]]");
+});
