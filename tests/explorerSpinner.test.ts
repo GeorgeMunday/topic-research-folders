@@ -34,15 +34,17 @@ function reducedMotionBlocks(css: string): string[] {
 test("styles: the explorer spinner is a rotating ring, and under prefers-reduced-motion a static dot (content '•', no animation, no ring)", () => {
   const css = readFileSync(path.resolve(__dirname, "../styles.css"), "utf8");
   // Normal state: a ring that rotates.
-  const normal = /\.nav-file-title\.trf-working::after\s*\{([^}]*)\}/.exec(css.replace(reducedMotionBlocks(css).join(""), ""));
+  const normal = /\.nav-file-title\.trf-working > \.nav-file-title-content::after\s*\{([^}]*)\}/.exec(css.replace(reducedMotionBlocks(css).join(""), ""));
   expect(normal).not.toBeNull();
+  // Beside the name (inside the title text element), not pushed to the far edge of the row.
+  expect(normal![1]).not.toMatch(/margin-left:\s*auto/);
   expect(normal![1]).toMatch(/animation:\s*trf-rotate/);
   expect(normal![1]).toMatch(/border:\s*2px solid/);
   expect(normal![1]).toMatch(/border-radius:\s*50%/);
   // Reduced motion: a static dot.
-  const block = reducedMotionBlocks(css).find((b) => b.includes(".trf-working::after"));
+  const block = reducedMotionBlocks(css).find((b) => b.includes(".trf-working > "));
   expect(block, "a reduced-motion block for .trf-working::after").toBeDefined();
-  const rule = /\.trf-working::after\s*\{([^}]*)\}/.exec(block!)![1];
+  const rule = /\.trf-working > [\w.-]+::after\s*\{([^}]*)\}/.exec(block!)![1];
   expect(rule).toMatch(/content:\s*"•"/);
   expect(rule).toMatch(/animation:\s*none/);
   expect(rule).toMatch(/border:\s*none/);

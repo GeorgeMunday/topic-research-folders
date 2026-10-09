@@ -11,8 +11,8 @@
   .trf-spin svg { animation: none; }
 }
 
-.nav-folder-title.trf-working::after,
-.nav-file-title.trf-working::after {
+.nav-folder-title.trf-working > .nav-folder-title-content::after,
+.nav-file-title.trf-working > .nav-file-title-content::after {
   content: "";
   width: 12px;
   height: 12px;
@@ -21,14 +21,16 @@
   border-top-color: var(--interactive-accent);
   border-radius: 50%;
   animation: trf-rotate 0.9s linear infinite;
-  margin-left: auto;
+  margin-left: 6px;
+  display: inline-block;
+  vertical-align: middle;
   flex-shrink: 0;
 }
 
 /* Under reduced motion the ring becomes a static dot. */
 @media (prefers-reduced-motion: reduce) {
-  .nav-folder-title.trf-working::after,
-  .nav-file-title.trf-working::after {
+  .nav-folder-title.trf-working > .nav-folder-title-content::after,
+  .nav-file-title.trf-working > .nav-file-title-content::after {
     content: "•";
     animation: none;
     border: none;
