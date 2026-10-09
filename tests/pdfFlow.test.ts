@@ -123,7 +123,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
       if (!b) throw new Error("ENOENT " + p);
       return b;
     },
-    settings: () => settings, today: () => "2026-10-09",
+    settings: () => settings, today: () => "2026-10-09", now: () => NOW,
     enqueue: (j) => { enqueued.push(j); return true; },
     processed: () => processed,
     markProcessed: async (h, p) => { order.push("mark"); marked.push(h); processed[h] = { path: p, date: "d" }; },
@@ -145,6 +145,9 @@ const drop = (c: Ctx, path: string, bytes: ArrayBuffer) => { c.files.set(path, b
 const noSignal = { cancelled: false };
 const noCp = async () => {};
 const job = (path: string): Job => ({ id: `pdf:${path}`, kind: "pdf", path });
+/** The clock the test flow sees; a trigger stamps its job with it. */
+const NOW = 1_000_000;
+const tjob = (path: string): Job => ({ ...job(path), triggeredAt: NOW } as Job);
 
 describe("plain PDFs are never processed", () => {
   test("a pdf created inside a research root without the suffix is ignored", async () => {
@@ -178,7 +181,7 @@ describe("suffix trigger on the PDF", () => {
     drop(c, "Topic/paper+.pdf", pdf1);
     await c.flow.onFileEvent("Topic/paper+.pdf");
     expect(c.renames).toEqual([["Topic/paper+.pdf", "Topic/paper.pdf"]]);
-    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/paper.pdf")]);
     expect([...c.errors, ...c.infos, ...c.confirms]).toEqual([]);
   });
 
@@ -187,7 +190,7 @@ describe("suffix trigger on the PDF", () => {
     drop(c, "Topic/paper.pdf+", pdf1);
     await c.flow.onFileEvent("Topic/paper.pdf+");
     expect(c.renames).toEqual([["Topic/paper.pdf+", "Topic/paper.pdf"]]);
-    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/paper.pdf")]);
   });
 
   test("a pdf at the vault root and outside any research root is still triggered", async () => {
@@ -195,7 +198,7 @@ describe("suffix trigger on the PDF", () => {
     drop(c, "paper+.PDF", pdf1);
     await c.flow.onFileEvent("paper+.PDF");
     expect(c.renames).toEqual([["paper+.PDF", "paper.PDF"]]);
-    expect(c.enqueued).toEqual([job("paper.PDF")]);
+    expect(c.enqueued).toEqual([tjob("paper.PDF")]);
   });
 
   test("stripSuffix off: no rename, job for the original path", async () => {
@@ -203,7 +206,7 @@ describe("suffix trigger on the PDF", () => {
     drop(c, "Topic/paper+.pdf", pdf1);
     await c.flow.onFileEvent("Topic/paper+.pdf");
     expect(c.renames).toEqual([]);
-    expect(c.enqueued).toEqual([job("Topic/paper+.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/paper+.pdf")]);
   });
 
   test("rename collision -> 'paper (2).pdf'", async () => {
@@ -212,7 +215,7 @@ describe("suffix trigger on the PDF", () => {
     drop(c, "Topic/paper+.pdf", pdf1);
     await c.flow.onFileEvent("Topic/paper+.pdf");
     expect(c.renames).toEqual([["Topic/paper+.pdf", "Topic/paper (2).pdf"]]);
-    expect(c.enqueued).toEqual([job("Topic/paper (2).pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/paper (2).pdf")]);
     // A folder with the clean name collides as well.
     c.vault.folders.add("Topic/report.pdf");
     drop(c, "Topic/report+.pdf", pdf1);
@@ -230,7 +233,7 @@ describe("suffix trigger on the PDF", () => {
     // a late duplicate for the old name: the file is gone
     await c.flow.onFileEvent("Topic/paper+.pdf");
     expect(c.renames).toEqual([["Topic/paper+.pdf", "Topic/paper.pdf"]]);
-    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/paper.pdf")]);
     expect([...c.errors, ...c.infos]).toEqual([]);
   });
 
@@ -245,7 +248,7 @@ describe("suffix trigger on the PDF", () => {
     // Once readable, the same trigger works (a skipped attempt leaves nothing stuck in flight).
     c.files.set("Topic/locked+.pdf", pdf1);
     await c.flow.onFileEvent("Topic/locked+.pdf");
-    expect(c.enqueued).toEqual([job("Topic/locked.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/locked.pdf")]);
   });
 
   test("an encrypted PDF is reported with the bare reason through the sink (notify without one) and not enqueued", async () => {
@@ -331,7 +334,7 @@ describe("run", () => {
   test("restored job with an already processed hash → silently returns without calling client", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
-    c.processed[await sha256(pdf1)] = { path: "x", date: "d" };
+    c.processed[await sha256(pdf1)] = { path: "x", date: "d", at: NOW } as any;
     await c.flow.run({ ...job("Topic/a.pdf"), resume: true } as Job, noSignal, noCp);
     expect(c.extract).not.toHaveBeenCalled();
     expect(c.infos).toEqual([]);
@@ -599,7 +602,7 @@ describe("progress events", () => {
   test("restored, already processed pdf emits nothing", async () => {
     const { c, events } = withSink();
     c.files.set("Topic/a.pdf", pdf1);
-    c.processed[await sha256(pdf1)] = { path: "x", date: "d" };
+    c.processed[await sha256(pdf1)] = { path: "x", date: "d", at: NOW } as any;
     await c.flow.run({ ...job("Topic/a.pdf"), resume: true } as Job, noSignal, noCp);
     expect(events).toEqual([]);
   });
@@ -778,7 +781,7 @@ describe("explicit triggers and one-by-one confirmation", () => {
     c.processed[await sha256(pdf1)] = { path: "Topic/old.pdf", date: "d" };
     drop(c, "Topic/paper+.pdf", pdf1);
     await c.flow.onFileEvent("Topic/paper+.pdf");
-    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/paper.pdf")]);
     await c.flow.run(c.enqueued[0], noSignal, noCp);
     expect(c.extract).toHaveBeenCalledTimes(1);
     expect(c.infos).toEqual(["Extracted 1 notes from paper.pdf"]);
@@ -789,7 +792,7 @@ describe("explicit triggers and one-by-one confirmation", () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
     c.files.set("Topic/b.pdf", pdf3);
-    c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d" };
+    c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d", at: NOW } as any;
     const research: Job = { id: "research:T", kind: "research", path: "T", done: [] };
     // What main does with data.json jobs before queue.restore.
     const restored = markResumed([job("Topic/a.pdf"), job("Topic/b.pdf"), research]);
@@ -818,7 +821,7 @@ describe("explicit triggers and one-by-one confirmation", () => {
     drop(u, "Topic/even+.pdf", ten[1]);
     await u.flow.onFileEvent("Topic/even+.pdf");
     expect(u.confirms).toEqual([]);
-    expect(u.enqueued).toEqual([job("Topic/even.pdf")]);
+    expect(u.enqueued).toEqual([tjob("Topic/even.pdf")]);
   });
 
   test("two PDFs triggered back to back are not batched: each is handled on its own (no timer dependency)", async () => {
@@ -833,7 +836,7 @@ describe("explicit triggers and one-by-one confirmation", () => {
     expect(c.confirms[0]).toContain("one.pdf");
     expect(c.confirms[1]).toContain("two.pdf");
     expect(c.confirms.every((m) => m.includes("10 pages") && !m.includes("20"))).toBe(true);
-    expect(c.enqueued).toEqual([job("Topic/two.pdf")]);
+    expect(c.enqueued).toEqual([tjob("Topic/two.pdf")]);
     expect("setTimer" in (c.flow as any).deps).toBe(false);
   });
 });
@@ -894,5 +897,41 @@ describe("fix round 1: the plugin's own rename never retriggers", () => {
     drop(c, "Topic/C+.pdf", pdf1);
     await c.flow.onFileEvent("Topic/C+.pdf");
     expect(c.renames).toEqual([["Topic/C+.pdf", "Topic/C.pdf"]]);
+  });
+});
+
+describe("fix round 1: a restored job is skipped only if it finished after it was triggered", () => {
+  const restoredJob = (path: string, triggeredAt: number): Job => ({ ...job(path), resume: true, triggeredAt } as Job);
+
+  test("processed last month (at < triggeredAt) + restored job -> runs", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d", at: NOW - 30 * 86_400_000 } as any;
+    await c.flow.run(restoredJob("Topic/a.pdf", NOW), noSignal, noCp);
+    expect(c.extract).toHaveBeenCalledTimes(1);
+  });
+
+  test("processed after the trigger (finished, then the app closed before the queue saved) + restored job -> skipped", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d", at: NOW + 5000 } as any;
+    await c.flow.run(restoredJob("Topic/a.pdf", NOW), noSignal, noCp);
+    expect(c.extract).not.toHaveBeenCalled();
+    expect([...c.infos, ...c.errors]).toEqual([]);
+  });
+
+  test("an old processed entry without 'at' never causes a skip", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d" };
+    await c.flow.run(restoredJob("Topic/a.pdf", NOW), noSignal, noCp);
+    expect(c.extract).toHaveBeenCalledTimes(1);
+  });
+
+  test("a trigger stamps its job with triggeredAt", async () => {
+    const c = setup();
+    drop(c, "Topic/paper+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/paper+.pdf");
+    expect(c.enqueued).toEqual([{ id: "pdf:Topic/paper.pdf", kind: "pdf", path: "Topic/paper.pdf", triggeredAt: NOW }]);
   });
 });

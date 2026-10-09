@@ -215,8 +215,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       today: localDate,
       enqueue: (j) => queue.add(j),
       processed: () => this.data.processedPdfs,
+      now: Date.now,
       markProcessed: async (hash, path) => {
-        this.data.processedPdfs[hash] = { path, date: localDate() };
+        this.data.processedPdfs[hash] = { path, date: localDate(), at: Date.now() };
         await this.persist();
       },
       rename: async (from, to) => {

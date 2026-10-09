@@ -25,7 +25,8 @@ export interface Settings {
 export interface PluginData {
   settings: Settings;
   jobs: Job[];
-  processedPdfs: Record<string, { path: string; date: string }>;
+  /** `at`: ms epoch when processing finished (missing in older data). */
+  processedPdfs: Record<string, { path: string; date: string; at?: number }>;
   modelCache: ModelCache | null;
   /** Folder suggestions waiting for review; the outline job has finished. */
   pendingReviews: PendingReview[];
@@ -74,7 +75,10 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 
 function validJob(j: unknown): boolean {
   if (!isObj(j) || typeof j.id !== "string" || typeof j.path !== "string") return false;
-  if (j.kind === "pdf") return j.resume === undefined || typeof j.resume === "boolean";
+  if (j.kind === "pdf") {
+    return (j.resume === undefined || typeof j.resume === "boolean")
+      && (j.triggeredAt === undefined || (typeof j.triggeredAt === "number" && Number.isFinite(j.triggeredAt)));
+  }
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
   if (j.summary !== undefined && typeof j.summary !== "string") return false;
@@ -99,7 +103,8 @@ function validProcessed(raw: unknown): PluginData["processedPdfs"] {
   const out: PluginData["processedPdfs"] = {};
   if (!isObj(raw)) return out;
   for (const [hash, e] of Object.entries(raw)) {
-    if (isObj(e) && typeof e.path === "string" && typeof e.date === "string") out[hash] = { path: e.path, date: e.date };
+    if (!isObj(e) || typeof e.path !== "string" || typeof e.date !== "string") continue;
+    out[hash] = typeof e.at === "number" && Number.isFinite(e.at) ? { path: e.path, date: e.date, at: e.at } : { path: e.path, date: e.date };
   }
   return out;
 }

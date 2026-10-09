@@ -7,8 +7,11 @@ export interface PdfExtraction { summary: string; notes: ExtractedNote[]; }
 /** `summary` carries the reviewed outline's summary into the overview written by the approved job. */
 export type Job =
   | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string }
-  /** `resume`: restored from data.json after a restart (skipped when its content was already processed). */
-  | { id: string; kind: "pdf"; path: string; resume?: boolean };
+  /**
+   * `triggeredAt`: ms epoch when the trigger queued it. `resume`: restored from data.json after a restart
+   * (skipped only when its content finished processing at or after `triggeredAt`).
+   */
+  | { id: string; kind: "pdf"; path: string; resume?: boolean; triggeredAt?: number };
 export type Progress =
   | { kind: "step"; text: string }
   | { kind: "outline"; outline: Outline }

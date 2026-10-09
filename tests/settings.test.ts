@@ -108,6 +108,17 @@ describe("mergeData entry validation", () => {
     const d = mergeData({ jobs: [resumed, fresh, { id: "pdf:c.pdf", kind: "pdf", path: "c.pdf", resume: "yes" }] });
     expect(d.jobs).toEqual([resumed, fresh]);
   });
+  test("keeps a processed entry's numeric 'at' and a pdf job's numeric triggeredAt", () => {
+    const d = mergeData({
+      processedPdfs: { a: { path: "a", date: "d", at: 123 }, b: { path: "b", date: "d", at: "x" }, c: { path: "c", date: "d" } },
+      jobs: [
+        { id: "pdf:a", kind: "pdf", path: "a", resume: true, triggeredAt: 5 },
+        { id: "pdf:b", kind: "pdf", path: "b", triggeredAt: "soon" },
+      ],
+    });
+    expect(d.processedPdfs).toEqual({ a: { path: "a", date: "d", at: 123 }, b: { path: "b", date: "d" }, c: { path: "c", date: "d" } });
+    expect(d.jobs).toEqual([{ id: "pdf:a", kind: "pdf", path: "a", resume: true, triggeredAt: 5 }]);
+  });
   test("drops malformed processedPdfs entries", () => {
     const d = mergeData({ processedPdfs: { ok: { path: "a", date: "d" }, a: { path: "a" }, b: { date: "d" }, c: null, d: "x" } });
     expect(d.processedPdfs).toEqual({ ok: { path: "a", date: "d" } });

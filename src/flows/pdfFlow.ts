@@ -33,8 +33,10 @@ export interface PdfDeps {
   settings: () => Settings;
   today: () => string;
   enqueue: (job: Job) => boolean;
-  processed: () => Record<string, { path: string; date: string }>;
+  processed: () => Record<string, { path: string; date: string; at?: number }>;
   markProcessed: (hash: string, path: string) => Promise<void>;
+  /** Clock (ms epoch) used to stamp triggered jobs; defaults to Date.now. */
+  now?: () => number;
   /** Renames a vault file (used to strip the trigger suffix). */
   rename: (from: string, to: string) => Promise<void>;
   progress?: ProgressSink;
@@ -153,7 +155,7 @@ export class PdfFlow {
       try { ok = await confirm.confirm(msg); } catch { ok = false; }
       if (!ok) return;
     }
-    enqueue({ id: `pdf:${finalPath}`, kind: "pdf", path: finalPath });
+    enqueue({ id: `pdf:${finalPath}`, kind: "pdf", path: finalPath, triggeredAt: (this.deps.now ?? Date.now)() });
   }
 
   /** A trigger-time failure: the sink gets a failed event with the bare reason, otherwise a notice. */
@@ -187,9 +189,12 @@ export class PdfFlow {
     let bytes: ArrayBuffer;
     try { bytes = await readBinary(job.path); } catch { return; }
     const hash = await sha256(bytes);
-    // An explicit trigger always runs; only a job restored after a restart is skipped when it already finished.
-    const resumed = job.kind === "pdf" && job.resume === true;
-    if ((resumed && processed()[hash]) || this.inFlight.has(hash)) return;
+    // An explicit trigger always runs. A job restored after a restart is skipped only when this content finished
+    // processing at or after the job was triggered (it completed before the queue could save); entries without
+    // `at` (older data) never cause a skip.
+    const at = processed()[hash]?.at;
+    const finished = job.kind === "pdf" && job.resume === true && typeof at === "number" && at >= (job.triggeredAt ?? 0);
+    if (finished || this.inFlight.has(hash)) return;
     if (signal.cancelled) return;
     this.inFlight.add(hash);
     let runId: number;
