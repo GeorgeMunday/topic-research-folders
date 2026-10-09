@@ -1,4 +1,4 @@
-import type { ExtractedNote, Job, PdfExtraction, Progress } from "../types";
+import type { Job, PdfOverview, Progress } from "../types";
 import type { Settings } from "../settings";
 import type { ResearchClient } from "../research/claudeClient";
 import type { VaultWriter } from "../vault/writer";
@@ -43,44 +43,10 @@ export interface PdfDeps {
 }
 
 const MAX_CHUNK_BYTES = 20_000_000;
-const MAX_KEY_POINTS = 10;
 const RESERVED = new Set(["from pdfs", "sources"]);
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const parentOf = (p: string) => (p.lastIndexOf("/") >= 0 ? p.slice(0, p.lastIndexOf("/")) : "");
-
-function mergePages(a: string, b: string): string {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of `${a},${b}`.split(",")) {
-    const t = part.trim();
-    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
-  }
-  return out.join(", ");
-}
-
-function mergeExtractions(results: PdfExtraction[]): PdfExtraction {
-  const notes: ExtractedNote[] = [];
-  const index = new Map<string, ExtractedNote>();
-  for (const r of results) {
-    for (const n of r.notes) {
-      const key = `${n.subfolder.toLowerCase()}\u0000${n.title.toLowerCase()}`;
-      const existing = index.get(key);
-      if (!existing) {
-        const copy = { ...n, keyPoints: [...n.keyPoints] };
-        index.set(key, copy);
-        notes.push(copy);
-        continue;
-      }
-      for (const k of n.keyPoints) if (!existing.keyPoints.includes(k)) existing.keyPoints.push(k);
-      existing.pages = mergePages(existing.pages, n.pages);
-    }
-  }
-  for (const n of notes) n.keyPoints = n.keyPoints.slice(0, MAX_KEY_POINTS);
-  const sums = results.map((r) => r.summary).filter((s) => s !== "");
-  const summary = sums.every((s) => s === sums[0]) ? (sums[0] ?? "") : sums.join(" ");
-  return { summary, notes };
-}
 
 export class PdfFlow {
   private ready = false;
@@ -95,7 +61,7 @@ export class PdfFlow {
   private lastRun = new Map<string, number>();
   private retryPending = new Set<string>();
   // Completed chunk results per file hash, kept across retry attempts so a retry does not resend them.
-  private chunkCache = new Map<string, Map<number, PdfExtraction>>();
+  private chunkCache = new Map<string, Map<number, PdfOverview>>();
   private cacheHashByPath = new Map<string, string>();
 
   constructor(private deps: PdfDeps) {}
@@ -189,7 +155,7 @@ export class PdfFlow {
   }
 
   run: Runner = async (job, signal) => {
-    const { readBinary, processed, notify, writer, settings, today, markProcessed } = this.deps;
+    const { readBinary, processed, notify, writer, settings, today, markProcessed, enqueue } = this.deps;
     let bytes: ArrayBuffer;
     try { bytes = await readBinary(job.path); } catch { return; }
     const hash = await sha256(bytes);
@@ -223,11 +189,16 @@ export class PdfFlow {
         report("no Claude API key — add it in the plugin settings", "Add your Claude API key in the plugin settings before analysing PDFs.");
         return;
       }
+      // Outside a research root the PDF stays where it is and gets its own folder `<dir>/<stem>` (a new root);
+      // inside a root the output goes into that root.
       const plan = await this.plan(job.path);
       const root = plan.root;
-      // A PDF outside any root gets its own folder (plan.container) once the overview writer exists (Task 18).
-      if (plan.asRoot || !root) { report("it is not inside a researched folder"); return; }
-      const subfolders = writer.listSubfolders(root.root).filter((n) => !RESERVED.has(n.toLowerCase()));
+      const subfolders = root ? writer.listSubfolders(root.root).filter((n) => !RESERVED.has(n.toLowerCase())) : [];
+      const stem = file.replace(/\.pdf$/i, "");
+      const retrying = (e: unknown) => {
+        if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); }
+        return e;
+      };
 
       let split: Awaited<ReturnType<typeof splitPdf>>;
       try {
@@ -248,36 +219,61 @@ export class PdfFlow {
       let done = this.chunkCache.get(hash);
       if (!done) { done = new Map(); this.chunkCache.set(hash, done); }
       this.cacheHashByPath.set(job.path, hash);
-      const results: PdfExtraction[] = [];
+      // Stage 1: an overview per chunk, sequentially; finished chunks are cached so a retry does not resend them.
+      const results: PdfOverview[] = [];
       for (const [i, chunk] of split.chunks.entries()) {
-        if (signal.cancelled) { keep = false; fail(CANCELLED_MESSAGE); return; }
+        if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
         const cached = done.get(i);
         if (cached) { results.push(cached); continue; }
         emit({ kind: "step", text: `Analysing ${file} (chunk ${i + 1}/${split.chunks.length})…` });
         try {
-          const r = await client.extractPdf(root.topic, subfolders, chunk.base64, chunk.firstPage - 1);
+          const r = await client.overviewPdf(stem, subfolders, chunk.base64, chunk.firstPage - 1);
           done.set(i, r);
           results.push(r);
         } catch (e) {
-          if (isRetryable(e)) { keep = true; if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); } throw e; }
+          if (isRetryable(e)) { keep = true; throw retrying(e); }
           report(e instanceof Error ? e.message : String(e));
           return;
         }
       }
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
-      const merged = mergeExtractions(results);
-      let written: Awaited<ReturnType<typeof writer.writeExtracted>>;
+      let overview: PdfOverview;
+      if (results.length === 1) {
+        overview = results[0];
+      } else {
+        // A text-only call picks the top 5 key points of the whole document from every chunk's candidates.
+        emit({ kind: "step", text: "Picking the top 5 key points…" });
+        try {
+          overview = await client.mergeOverviews(stem, results);
+        } catch (e) {
+          if (isRetryable(e)) { keep = true; throw retrying(e); }
+          report(e instanceof Error ? e.message : String(e));
+          return;
+        }
+      }
+      if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
+      let written: Awaited<ReturnType<typeof writer.writePdfOverview>>;
       try {
-        written = await writer.writeExtracted(root.root, root.topic, file, merged, today());
-        await markProcessed(hash, job.path);
+        written = await writer.writePdfOverview({
+          container: plan.container, asRoot: plan.asRoot, pdfName: file, overview, existingSubfolders: subfolders, date: today(),
+        });
       } catch (e) {
-        if (isRetryable(e)) { if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); } }
+        if (isRetryable(e)) retrying(e);
         else fail(e instanceof Error ? e.message : String(e));
         throw e;
       }
-      emit({ kind: "done", folders: new Set(written.map((w) => w.folder)).size, notes: written.length });
-      // With a sink the hub turns `done` into the notice.
-      if (!this.deps.progress) notify.info(`Extracted ${merged.notes.length} notes from ${file}`);
+      // Stage 2: one queued job per key point (each researched on its own; one failure never stops the others).
+      const parents = root ? [...root.parents, root.topic] : [];
+      for (const entry of written.entries) {
+        enqueue({
+          id: `keypoint:${entry.entryPath}`, kind: "keypoint", path: entry.entryPath, folder: entry.folder,
+          pdfName: file, topic: stem, parents: [...parents], point: entry.point,
+        });
+      }
+      // The jobs are queued: a failure to record the hash must not retry the run (it would duplicate them).
+      try { await markProcessed(hash, job.path); } catch { /* the overview is written; only a later restore is affected */ }
+      // The hub turns `done` into "Overview ready for <file> — researching N key points".
+      emit({ kind: "done", folders: written.entries.length, notes: 1 });
     } finally {
       this.inFlight.delete(hash);
       if (!keep) { this.chunkCache.delete(hash); this.cacheHashByPath.delete(job.path); }

@@ -6,7 +6,6 @@ import { ParseError } from "../src/research/parse";
 type Req = Parameters<HttpFn>[0];
 const OUTLINE = JSON.stringify({ topic: "T", summary: "S", subfolders: [{ name: "A", why: "w" }] });
 const NOTES = JSON.stringify({ notes: [{ title: "N", summary: "s", keyPoints: ["k"], plainWords: "p" }] });
-const PDF = JSON.stringify({ summary: "s", notes: [{ subfolder: "A", isNew: false, title: "N", summary: "s", keyPoints: ["k (p. 1)"], plainWords: "p", pages: "1" }] });
 
 function fake(json: any, status = 200, headers: Record<string, string> = {}) {
   const reqs: Req[] = [];
@@ -47,17 +46,6 @@ test("no tools when web search off", async () => {
   const { http, reqs } = fake(ok(OUTLINE));
   await new ClaudeClient(http, cfg({ useWebSearch: false })).outline("T", [], 5);
   expect(JSON.parse(reqs[0].body).tools).toBeUndefined();
-});
-
-test("pdf request: document block first, no web search", async () => {
-  const { http, reqs } = fake(ok(PDF));
-  const res = await new ClaudeClient(http, cfg()).extractPdf("T", ["A"], "QUJD", 0);
-  expect(res.notes[0].subfolder).toBe("A");
-  const body = JSON.parse(reqs[0].body);
-  expect(body.max_tokens).toBe(16000);
-  expect(body.messages[0].content[0]).toEqual({ type: "document", source: { type: "base64", media_type: "application/pdf", data: "QUJD" } });
-  expect(body.messages[0].content[1].type).toBe("text");
-  expect(body.tools).toBeUndefined();
 });
 
 test("uses the LAST text block containing a brace", async () => {

@@ -1,4 +1,4 @@
-import type { Outline, NoteContent, PdfExtraction, ExtractedNote, SubfolderSuggestion, KeyPoint, PdfOverview } from "../types";
+import type { Outline, NoteContent, SubfolderSuggestion, KeyPoint, PdfOverview } from "../types";
 
 export class ParseError extends Error {
   constructor(message: string) {
@@ -88,22 +88,6 @@ export function parseNotes(text: string, count: number): NoteContent[] {
   }
   if (notes.length === 0) throw new ParseError("Response has no valid notes");
   return notes.slice(0, count);
-}
-
-export function parsePdfExtraction(text: string, subfolders: string[]): PdfExtraction {
-  const data = extractJson(text);
-  if (!isObj(data) || !Array.isArray(data.notes)) throw new ParseError("Extraction is missing notes");
-  const notes: ExtractedNote[] = [];
-  for (const n of data.notes) {
-    const note = parseNote(n);
-    if (!note || !isObj(n)) continue;
-    const sub = str(n.subfolder);
-    if (!sub) throw new ParseError(`Note "${note.title}" is missing subfolder`);
-    const match = subfolders.find(s => s.toLowerCase() === sub.toLowerCase());
-    notes.push({ ...note, subfolder: match ?? sub, isNew: !match, pages: str(n.pages) });
-  }
-  if (notes.length === 0) throw new ParseError("Extraction has no valid notes");
-  return { summary: str(data.summary), notes };
 }
 
 const MAX_KEY_POINTS = 5;

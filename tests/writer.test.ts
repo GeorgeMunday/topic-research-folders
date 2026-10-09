@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { VaultWriter, type VaultLike } from "../src/vault/writer";
-import type { KeyPoint, Outline, PdfExtraction, PdfOverview, SubfolderNotes } from "../src/types";
+import type { KeyPoint, Outline, PdfOverview, SubfolderNotes } from "../src/types";
 
 class MemVault implements VaultLike {
   files = new Map<string, string>();
@@ -95,66 +95,6 @@ describe("writeOverview", () => {
   });
 });
 
-describe("writeExtracted", () => {
-  const ex: PdfExtraction = {
-    summary: "paper summary",
-    notes: [
-      { ...note("Horizon facts"), subfolder: "anatomy", isNew: false, pages: "3-4" },
-      { ...note("Jets: big"), subfolder: "Jets", isNew: true, pages: "7" },
-      { ...note("Ghost"), subfolder: "Deleted", isNew: false, pages: "9" },
-    ],
-  };
-
-  test("routes notes and writes source summary", async () => {
-    const { v, w } = setup();
-    v.folders.add("Black holes/Anatomy");
-    const r = await w.writeExtracted("Black holes", "Black holes", "paper.pdf", ex, DATE);
-    expect(r).toEqual([
-      { subfolder: "anatomy", title: "Horizon facts", folder: "Black holes/Anatomy" },
-      { subfolder: "Jets", title: "Jets - big", folder: "Black holes/From PDFs/Jets" },
-      { subfolder: "Deleted", title: "Ghost", folder: "Black holes/From PDFs/Deleted" },
-    ]);
-    const n1 = v.files.get("Black holes/Anatomy/Horizon facts.md")!;
-    expect(n1).toContain('source: "[[paper.pdf]]"');
-    expect(n1).toContain('pages: "3-4"');
-    expect(v.files.has("Black holes/From PDFs/Jets/Jets - big.md")).toBe(true);
-    expect(v.files.has("Black holes/From PDFs/Deleted/Ghost.md")).toBe(true);
-    const s = v.files.get("Black holes/Sources/paper - Summary.md")!;
-    expect(s).toContain("[[Black holes/Anatomy/Horizon facts|Horizon facts]]");
-    expect(s).toContain("[[Black holes/From PDFs/Jets/Jets - big|Jets - big]]");
-    expect(s).toContain("[[Black holes/From PDFs/Deleted/Ghost|Ghost]]");
-  });
-
-  test("reuses existing From PDFs and Sources folders, never overwrites", async () => {
-    const { v, w } = setup();
-    v.folders.add("Black holes/From PDFs");
-    v.folders.add("Black holes/From PDFs/Jets");
-    v.folders.add("Black holes/Sources");
-    v.files.set("Black holes/Sources/paper - Summary.md", "ORIGINAL");
-    v.files.set("Black holes/From PDFs/Jets/Jets - big.md", "ORIGINAL2");
-    const r = await w.writeExtracted("Black holes", "Black holes", "paper.pdf", { summary: "s", notes: [ex.notes[1]] }, DATE);
-    expect(r).toEqual([{ subfolder: "Jets", title: "Jets - big (2)", folder: "Black holes/From PDFs/Jets" }]);
-    expect(v.files.get("Black holes/Sources/paper - Summary.md")).toBe("ORIGINAL");
-    expect(v.files.has("Black holes/Sources/paper - Summary (2).md")).toBe(true);
-    expect(v.files.get("Black holes/From PDFs/Jets/Jets - big.md")).toBe("ORIGINAL2");
-  });
-
-  test("returned titles are unique across the batch", async () => {
-    const { v, w } = setup();
-    v.folders.add("Black holes/Anatomy");
-    const dup: PdfExtraction = {
-      summary: "s",
-      notes: [
-        { ...note("Same"), subfolder: "Anatomy", isNew: false, pages: "1" },
-        { ...note("Same"), subfolder: "Jets", isNew: true, pages: "2" },
-      ],
-    };
-    const r = await w.writeExtracted("Black holes", "Black holes", "p.pdf", dup, DATE);
-    expect(r.map((x) => x.title)).toEqual(["Same", "Same (2)"]);
-    expect(v.files.has("Black holes/From PDFs/Jets/Same (2).md")).toBe(true);
-  });
-});
-
 describe("isResearchRoot", () => {
   const marked = "---\nresearch-root: true\n---\n";
   test("true only for a folder with its own marked overview", async () => {
@@ -228,28 +168,6 @@ describe("findResearchRoot robustness", () => {
     v.files.set("Q/Q - Overview.md", "---\r\nresearch-root: true\r\n---\r\n");
     expect(await w.findResearchRoot("P/x.pdf")).toBeNull();
     expect((await w.findResearchRoot("Q/x.pdf"))?.root).toBe("Q");
-  });
-});
-
-describe("case-insensitive folders", () => {
-  test("reuses existing 'from pdfs' and 'sources' folders", async () => {
-    const { v, w } = setup();
-    v.folders.add("Black holes/from pdfs");
-    v.folders.add("Black holes/SOURCES");
-    const ex: PdfExtraction = { summary: "s", notes: [{ ...note("N"), subfolder: "Jets", isNew: true, pages: "1" }] };
-    await w.writeExtracted("Black holes", "Black holes", "p.pdf", ex, DATE);
-    expect(v.files.has("Black holes/from pdfs/Jets/N.md")).toBe(true);
-    expect(v.files.has("Black holes/SOURCES/p - Summary.md")).toBe(true);
-    expect(v.folders.has("Black holes/From PDFs")).toBe(false);
-  });
-  test("non-new note named 'From PDFs' or 'Sources' is not routed into them", async () => {
-    const { v, w } = setup();
-    v.folders.add("Black holes/From PDFs");
-    v.folders.add("Black holes/Sources");
-    const ex: PdfExtraction = { summary: "s", notes: [{ ...note("N"), subfolder: "Sources", isNew: false, pages: "1" }] };
-    await w.writeExtracted("Black holes", "Black holes", "p.pdf", ex, DATE);
-    expect(v.files.has("Black holes/Sources/N.md")).toBe(false);
-    expect(v.files.has("Black holes/From PDFs/Sources/N.md")).toBe(true);
   });
 });
 

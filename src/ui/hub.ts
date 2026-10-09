@@ -23,6 +23,8 @@ export interface HubActions {
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+/** The path a job's events use: a key point's events are keyed by its folder, everything else by its path. */
+const eventPath = (job: Job) => (job.kind === "keypoint" ? job.folder : job.path);
 
 export class ProgressHub {
   private tracker = new ProgressTracker();
@@ -80,16 +82,17 @@ export class ProgressHub {
   onQueueFailed(job: Job, err: unknown): void {
     if (this.disposed) return;
     const message = err instanceof Error ? err.message : "unexpected error";
-    const cur = this.gate.currentRun(job.path);
-    const prev = this.lastFailed.get(job.path);
+    const path = eventPath(job);
+    const cur = this.gate.currentRun(path);
+    const prev = this.lastFailed.get(path);
     let runId: number;
-    if (this.gate.live(job.path) && cur !== undefined) runId = cur;
+    if (this.gate.live(path) && cur !== undefined) runId = cur;
     // The flow already reported a failure for its (now ended) run: reuse that id so no second notice appears.
     else if (prev && prev.kind === job.kind && prev.runId === cur) runId = prev.runId;
     else runId = nextRunId();
-    this.sink(job.path, { kind: "failed", error: message }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved, runId });
+    this.sink(path, { kind: "failed", error: message }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved, runId });
     // One-shot: the queue gave up on this job, so a later failure on the path belongs to a new job.
-    this.lastFailed.delete(job.path);
+    this.lastFailed.delete(path);
   }
 
   restorePending(list: PendingReview[], jobs: Job[]): void {
@@ -98,7 +101,8 @@ export class ProgressHub {
     this.pendingRun.clear();
     for (const p of this.pendingList) this.showReady(p.path);
     for (const job of jobs) {
-      this.tracker.handle(job.path, { kind: "step", text: `Resuming ${baseName(job.path)}…` }, { kind: job.kind, resumed: true });
+      const path = eventPath(job);
+      this.tracker.handle(path, { kind: "step", text: `Resuming ${baseName(path)}…` }, { kind: job.kind, resumed: true });
     }
     this.refresh();
   }

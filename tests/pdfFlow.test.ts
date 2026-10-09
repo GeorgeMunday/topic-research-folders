@@ -4,7 +4,7 @@ import { PdfFlow, markResumed, type PdfDeps } from "../src/flows/pdfFlow";
 import { VaultWriter, type VaultLike } from "../src/vault/writer";
 import { ApiError, JobQueue } from "../src/jobs/queue";
 import { sha256 } from "../src/pdf/chunk";
-import type { Job, PdfExtraction, ExtractedNote } from "../src/types";
+import type { Job, KeyPoint, PdfOverview } from "../src/types";
 import type { Settings } from "../src/settings";
 import type { Progress } from "../src/types";
 import { CANCELLED_MESSAGE, type ProgressSource } from "../src/progress";
@@ -72,16 +72,20 @@ const baseSettings: Settings = {
   processPdfs: true, pdfPagesPerChunk: 50, confirmAbovePages: 200,
 };
 
-const note = (subfolder: string, title: string, keyPoints: string[], pages: string, summary = "s"): ExtractedNote => ({
-  subfolder, title, summary, keyPoints, plainWords: "p", isNew: false, pages,
+const kp = (name: string, page = 1, subfolder?: string): KeyPoint => ({
+  name, text: `${name} matters (p. ${page})`, detail: `About ${name}.`, pages: String(page), ...(subfolder ? { subfolder } : {}),
 });
+const ov = (...names: string[]): PdfOverview => ({ summary: "sum", plainWords: "p", keyPoints: names.map((n, i) => kp(n, i + 1)) });
+/** Default merge: every chunk's key points in order, capped at 5 (like the model's top 5). */
+const concat = async (_n: string, cands: PdfOverview[]): Promise<PdfOverview> =>
+  ({ summary: cands.map((c) => c.summary).join(" "), plainWords: "p", keyPoints: cands.flatMap((c) => c.keyPoints).slice(0, 5) });
 
 interface Ctx {
   flow: PdfFlow; vault: MemVault; files: Map<string, ArrayBuffer>;
   enqueued: Job[]; infos: string[]; errors: string[]; confirms: string[];
   processed: Record<string, { path: string; date: string }>;
   marked: string[]; order: string[]; renames: [string, string][];
-  extract: ReturnType<typeof vi.fn>; settings: Settings;
+  overview: ReturnType<typeof vi.fn>; merge: ReturnType<typeof vi.fn>; settings: Settings;
   confirmAnswer: { value: boolean | Promise<boolean> };
   readCalls: { active: number; max: number; total: number };
   client: { v: any }; writer: VaultWriter; slow: { ms: number };
@@ -93,9 +97,9 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   vault.files.set("Topic/Topic - Overview.md", "---\nresearch-root: true\n---\n# Topic");
   vault.folders.add("Topic/Anatomy");
   const writer = new VaultWriter(vault);
-  const realWrite = writer.writeExtracted.bind(writer);
+  const realWrite = writer.writePdfOverview.bind(writer);
   const order: string[] = [];
-  writer.writeExtracted = async (...a) => { order.push("write"); return realWrite(...a); };
+  writer.writePdfOverview = async (...a) => { order.push("write"); return realWrite(...a); };
   const files = new Map<string, ArrayBuffer>();
   const enqueued: Job[] = [];
   const infos: string[] = [];
@@ -105,10 +109,11 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   const marked: string[] = [];
   const renames: [string, string][] = [];
   const settings = { ...baseSettings, ...over };
-  const extract = vi.fn(async (..._a: any[]): Promise<PdfExtraction> => ({ summary: "sum", notes: [note("Anatomy", "N", ["a"], "1")] }));
+  const overview = vi.fn(async (..._a: any[]): Promise<PdfOverview> => ov("N"));
+  const merge = vi.fn(concat);
   const confirmAnswer = { value: true as boolean | Promise<boolean> };
   const readCalls = { active: 0, max: 0, total: 0 };
-  const client = { v: { extractPdf: extract } as any };
+  const client = { v: { overviewPdf: overview, mergeOverviews: merge } as any };
   const slow = { ms: 1 };
   const deps: PdfDeps = {
     client: () => client.v, writer,
@@ -124,7 +129,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
       return b;
     },
     settings: () => settings, today: () => "2026-10-09", now: () => NOW,
-    enqueue: (j) => { enqueued.push(j); return true; },
+    enqueue: (j) => { if (j.kind === "keypoint") order.push("enqueue"); enqueued.push(j); return true; },
     processed: () => processed,
     markProcessed: async (h, p) => { order.push("mark"); marked.push(h); processed[h] = { path: p, date: "d" }; },
     rename: async (from, to) => {
@@ -137,7 +142,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   };
   const flow = new PdfFlow(deps);
   if (ready) flow.markReady();
-  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, renames, extract, settings, confirmAnswer, readCalls, client, writer, slow };
+  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, renames, overview, merge, settings, confirmAnswer, readCalls, client, writer, slow };
 }
 
 /** Puts a PDF into the vault (listed as a sibling) and makes its bytes readable. */
@@ -274,18 +279,32 @@ describe("run", () => {
   test("chunks big PDF, passes page offsets 0/50/100 and merges results", async () => {
     const c = setup();
     c.files.set("Topic/big.pdf", pdf120);
-    c.extract.mockImplementation(async (_t: string, _s: string[], _b: string, off: number) => ({
-      summary: `sum${off}`, notes: [note("Anatomy", `Note ${off}`, [`k${off}`], `${off + 1}-${off + 50}`)],
+    c.overview.mockImplementation(async (_n: string, _s: string[], _b: string, off: number) => ({
+      summary: `sum${off}`, plainWords: "p", keyPoints: [kp(`Point ${off}`, off + 1)],
     }));
     await c.flow.run(job("Topic/big.pdf"), noSignal, noCp);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 50, 100]);
-    expect(c.extract.mock.calls[0][0]).toBe("Topic");
-    expect(c.extract.mock.calls[0][1]).toEqual(["Anatomy"]);
-    expect(c.infos).toEqual(["Extracted 3 notes from big.pdf"]);
-    const summary = c.vault.files.get("Topic/Sources/big - Summary.md")!;
-    expect(summary).toContain("sum0 sum50 sum100");
-    expect(c.vault.files.has("Topic/Anatomy/Note 0.md")).toBe(true);
-    expect(c.vault.files.has("Topic/Anatomy/Note 100.md")).toBe(true);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 50, 100]);
+    expect(c.overview.mock.calls.map((x) => x[0])).toEqual(["big", "big", "big"]);
+    expect(c.overview.mock.calls[0][1]).toEqual(["Anatomy"]);
+    // Chunked: one text-only merge over every chunk's result.
+    expect(c.merge).toHaveBeenCalledTimes(1);
+    expect(c.merge.mock.calls[0][0]).toBe("big");
+    expect(c.merge.mock.calls[0][1].map((r: PdfOverview) => r.summary)).toEqual(["sum0", "sum50", "sum100"]);
+    const md = c.vault.files.get("Topic/Sources/big - Overview.md")!;
+    expect(md).toContain("sum0 sum50 sum100");
+    expect(md).toContain("Point 50 matters (p. 51)");
+    expect(c.infos).toEqual([]);
+  });
+
+  test("a single chunk is used as is: no merge call", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf3);
+    c.overview.mockResolvedValue(ov("Alpha", "Beta"));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.overview).toHaveBeenCalledTimes(1);
+    expect(c.overview.mock.calls[0][3]).toBe(0);
+    expect(c.merge).not.toHaveBeenCalled();
+    expect(c.enqueued.map((j) => j.kind === "keypoint" && j.point.name)).toEqual(["Alpha", "Beta"]);
   });
 
   test("subfolder list excludes From PDFs and Sources", async () => {
@@ -293,42 +312,65 @@ describe("run", () => {
     c.vault.folders.add("Topic/From PDFs"); c.vault.folders.add("Topic/Sources");
     c.files.set("Topic/a.pdf", pdf1);
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.extract.mock.calls[0][1]).toEqual(["Anatomy"]);
+    expect(c.overview.mock.calls[0][1]).toEqual(["Anatomy"]);
   });
 
-  test("same-titled notes from different chunks are merged", async () => {
-    const c = setup();
-    c.files.set("Topic/big.pdf", pdf120);
-    const pts = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
-    const results: PdfExtraction[] = [
-      { summary: "S", notes: [note("Anatomy", "Horizon", [...pts("a", 6), "dup"], "3-5", "first")] },
-      { summary: "S", notes: [note("anatomy", "horizon", ["dup", ...pts("b", 6)], "60-62, 3-5", "second")] },
-      { summary: "S", notes: [] },
-    ];
-    let i = 0;
-    c.extract.mockImplementation(async () => results[i++]);
-    await c.flow.run(job("Topic/big.pdf"), noSignal, noCp);
-    expect(c.infos).toEqual(["Extracted 1 notes from big.pdf"]);
-    const text = c.vault.files.get("Topic/Anatomy/Horizon.md")!;
-    expect(text).toContain("first");
-    expect(text).not.toContain("second");
-    expect(text).toContain("a0");
-    expect(text).toContain("3-5, 60-62");
-    expect(text).not.toContain("b3"); // capped at 10: a0-a5, dup, b0-b2
-    expect(text).toContain("b2");
-    expect(text.match(/dup/g)!.length).toBe(1);
-    const sum = c.vault.files.get("Topic/Sources/big - Summary.md")!;
-    expect(sum).toContain("S");
-    expect(sum).not.toContain("S S");
-  });
-
-  test("writes via writeExtracted then marks processed", async () => {
+  test("pdf run enqueues exactly 5 keypoint jobs for a 5-point overview, 2 for a 2-point one, 0 for none", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
+    c.overview.mockResolvedValue({ ...ov("One", "Two", "Three", "Four", "Five"), keyPoints: [kp("One", 1, "Anatomy"), kp("Two"), kp("Three"), kp("Four"), kp("Five")] });
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.order).toEqual(["write", "mark"]);
+    expect(c.enqueued).toEqual([
+      { id: "keypoint:Topic/Anatomy/One.md", kind: "keypoint", path: "Topic/Anatomy/One.md", folder: "Topic/Anatomy", pdfName: "a.pdf", topic: "a", parents: ["Topic"], point: kp("One", 1, "Anatomy") },
+      ...["Two", "Three", "Four", "Five"].map((n) => ({
+        id: `keypoint:Topic/From PDFs/${n}/${n}.md`, kind: "keypoint", path: `Topic/From PDFs/${n}/${n}.md`, folder: `Topic/From PDFs/${n}`,
+        pdfName: "a.pdf", topic: "a", parents: ["Topic"], point: kp(n),
+      })),
+    ]);
+    const two = setup();
+    two.files.set("Topic/a.pdf", pdf1);
+    two.overview.mockResolvedValue(ov("One", "Two"));
+    await two.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(two.enqueued).toHaveLength(2);
+    const none = setup();
+    none.files.set("Topic/a.pdf", pdf1);
+    none.overview.mockResolvedValue(ov());
+    await none.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(none.enqueued).toEqual([]);
+    expect(none.vault.files.has("Topic/Sources/a - Overview.md")).toBe(true);
+    expect(none.marked).toHaveLength(1);
+  });
+
+  test("marks the hash processed after the overview is written and the jobs are queued (not before)", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.overview.mockResolvedValue(ov("One", "Two"));
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.order).toEqual(["write", "enqueue", "enqueue", "mark"]);
     expect(c.marked).toEqual([await sha256(pdf1)]);
-    expect(c.infos).toEqual(["Extracted 1 notes from a.pdf"]);
+    expect(c.infos).toEqual([]);
+  });
+
+  test("outside a root the PDF stays in place and '<dir>/<stem>/' is created as a new research root; inside a root the overview lands in Sources", async () => {
+    const c = setup();
+    drop(c, "Docs/paper.pdf", pdf1);
+    c.overview.mockResolvedValue(ov("Alpha"));
+    await c.flow.run(job("Docs/paper.pdf"), noSignal, noCp);
+    expect(c.renames).toEqual([]);
+    expect(c.vault.files.has("Docs/paper.pdf")).toBe(true);
+    expect(c.overview.mock.calls[0][1]).toEqual([]);
+    expect(c.vault.files.get("Docs/paper/paper - Overview.md")).toContain("research-root: true");
+    expect(c.enqueued).toEqual([{
+      id: "keypoint:Docs/paper/Alpha/Alpha.md", kind: "keypoint", path: "Docs/paper/Alpha/Alpha.md", folder: "Docs/paper/Alpha",
+      pdfName: "paper.pdf", topic: "paper", parents: [], point: kp("Alpha", 1),
+    }]);
+    expect(await c.writer.isResearchRoot("Docs/paper")).toBe(true);
+
+    const r = setup();
+    drop(r, "Topic/Anatomy/paper.pdf", pdf1);
+    await r.flow.run(job("Topic/Anatomy/paper.pdf"), noSignal, noCp);
+    expect(r.vault.files.get("Topic/Sources/paper - Overview.md")).not.toContain("research-root");
+    expect(r.vault.folders.has("Topic/Anatomy/paper")).toBe(false);
   });
 
   test("restored job with an already processed hash → silently returns without calling client", async () => {
@@ -336,7 +378,7 @@ describe("run", () => {
     c.files.set("Topic/a.pdf", pdf1);
     c.processed[await sha256(pdf1)] = { path: "x", date: "d", at: NOW } as any;
     await c.flow.run({ ...job("Topic/a.pdf"), resume: true } as Job, noSignal, noCp);
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
     expect(c.infos).toEqual([]);
   });
 
@@ -344,12 +386,12 @@ describe("run", () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1); c.files.set("Topic/b.pdf", pdf1);
     // The first run is still analysing while the second starts (processedPdfs does not stop explicit jobs).
-    c.extract.mockImplementation(async () => {
+    c.overview.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 30));
-      return { summary: "sum", notes: [note("Anatomy", "N", ["a"], "1")] };
+      return ov("N");
     });
     await Promise.all([c.flow.run(job("Topic/a.pdf"), noSignal, noCp), c.flow.run(job("Topic/b.pdf"), noSignal, noCp)]);
-    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.overview).toHaveBeenCalledTimes(1);
     expect(c.marked.length).toBe(1);
   });
 
@@ -367,7 +409,7 @@ describe("run", () => {
     c.files.set("Topic/a.pdf", pdf1);
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(c.errors.length).toBe(1);
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
   });
 
   test("encrypted pdf → notice naming file, job completes without throwing", async () => {
@@ -375,7 +417,7 @@ describe("run", () => {
     c.files.set("Topic/secret.pdf", encrypted);
     await expect(c.flow.run(job("Topic/secret.pdf"), noSignal, noCp)).resolves.toBeUndefined();
     expect(c.errors[0]).toContain("secret.pdf");
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
     expect(c.marked).toEqual([]);
   });
 
@@ -390,7 +432,7 @@ describe("run", () => {
       await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     } finally { hoisted.splitOverride = null; }
     expect([...c.errors, ...c.infos].some((m) => m.includes("a.pdf") && m.includes("2") && m.includes("7"))).toBe(true);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 2]);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 2]);
     expect(c.marked.length).toBe(1);
   });
 
@@ -399,25 +441,25 @@ describe("run", () => {
     await expect(c.flow.run(job("Topic/gone.pdf"), noSignal, noCp)).resolves.toBeUndefined();
     expect(c.errors).toEqual([]);
     expect(c.infos).toEqual([]);
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
   });
 
   test("retryable ApiError propagates and marks nothing", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
-    c.extract.mockRejectedValue(new ApiError("overloaded", 529));
+    c.overview.mockRejectedValue(new ApiError("overloaded", 529));
     await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(ApiError);
     expect(c.marked).toEqual([]);
     // inFlight must be cleared so the retry can run
-    c.extract.mockResolvedValue({ summary: "s", notes: [] });
+    c.overview.mockResolvedValue(ov());
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.extract).toHaveBeenCalledTimes(2);
+    expect(c.overview).toHaveBeenCalledTimes(2);
   });
 
-  test("a network TypeError from extractPdf propagates (retryable)", async () => {
+  test("a network TypeError from overviewPdf propagates (retryable)", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
-    c.extract.mockRejectedValue(new TypeError("offline"));
+    c.overview.mockRejectedValue(new TypeError("offline"));
     await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(TypeError);
     expect(c.marked).toEqual([]);
     expect(c.errors).toEqual([]);
@@ -426,7 +468,7 @@ describe("run", () => {
   test("non-retryable error → notice, nothing processed, no throw", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
-    c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    c.overview.mockRejectedValue(new ApiError("bad request", 400));
     await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).resolves.toBeUndefined();
     expect(c.errors.length).toBe(1);
     expect(c.marked).toEqual([]);
@@ -439,11 +481,25 @@ describe("fix round 1", () => {
     const c = setup();
     c.files.set("Topic/big.pdf", pdf120);
     const sig = { cancelled: false };
-    c.extract.mockImplementation(async () => { sig.cancelled = true; return { summary: "s", notes: [note("Anatomy", "N", ["a"], "1")] }; });
+    c.overview.mockImplementation(async () => { sig.cancelled = true; return ov("N"); });
     await c.flow.run(job("Topic/big.pdf"), sig, noCp);
-    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.overview).toHaveBeenCalledTimes(1);
     expect(c.order).toEqual([]);
     expect(c.marked).toEqual([]);
+  });
+
+  test("cancel mid-way writes nothing: cancelled while the chunks are merged -> no overview, no folders, no jobs", async () => {
+    const c = setup();
+    c.files.set("Topic/big.pdf", pdf120);
+    const before = new Set([...c.vault.files.keys(), ...c.vault.folders]);
+    const sig = { cancelled: false };
+    c.merge.mockImplementation(async (n: string, cands: PdfOverview[]) => { sig.cancelled = true; return concat(n, cands); });
+    await c.flow.run(job("Topic/big.pdf"), sig, noCp);
+    expect(c.merge).toHaveBeenCalledTimes(1);
+    expect(c.order).toEqual([]);
+    expect(c.enqueued).toEqual([]);
+    expect(c.marked).toEqual([]);
+    expect(new Set([...c.vault.files.keys(), ...c.vault.folders])).toEqual(before);
   });
 });
 
@@ -455,10 +511,10 @@ describe("chunk cache", () => {
   };
   const impl = (c: Ctx, failAt: number, err: () => Error) => {
     let failed = false;
-    c.extract.mockImplementation(async (...a: any[]): Promise<PdfExtraction> => {
+    c.overview.mockImplementation(async (...a: any[]): Promise<PdfOverview> => {
       const off = a[3] as number;
       if (off === failAt && !failed) { failed = true; throw err(); }
-      return { summary: "sum", notes: [note("Anatomy", `N${off}`, [`k${off}`], String(off + 1))] };
+      return { summary: "sum", plainWords: "p", keyPoints: [kp(`N${off}`, off + 1)] };
     });
   };
   const queueFor = (c: Ctx) => new JobQueue(c.flow.run, {
@@ -473,9 +529,39 @@ describe("chunk cache", () => {
     const q = queueFor(c);
     q.add(job("Topic/a.pdf"));
     await q.idle();
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 1, 2]);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 1, 2]);
     expect(c.marked.length).toBe(1);
-    for (const t of ["N0", "N1", "N2"]) expect(c.vault.files.has(`Topic/Anatomy/${t}.md`)).toBe(true);
+    for (const t of ["N0", "N1", "N2"]) expect(c.vault.files.has(`Topic/From PDFs/${t}/${t}.md`)).toBe(true);
+  });
+
+  test("a retryable error in stage 1 does not resend finished chunks and does not enqueue jobs twice (chunk and merge failures)", async () => {
+    const c = chunkSetup();
+    impl(c, 2, () => new ApiError("rate limited", 429));
+    let mergeFailed = false;
+    c.merge.mockImplementation(async (n: string, cands: PdfOverview[]) => {
+      if (!mergeFailed) { mergeFailed = true; throw new ApiError("overloaded", 529); }
+      return concat(n, cands);
+    });
+    const q = queueFor(c);
+    q.add(job("Topic/a.pdf"));
+    await q.idle();
+    // chunk 3 failed once; then the merge failed once: neither retry resent a finished chunk.
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 2, 2]);
+    expect(c.merge).toHaveBeenCalledTimes(2);
+    expect(c.order.filter((o) => o === "write")).toEqual(["write"]);
+    expect(c.enqueued.filter((j) => j.kind === "keypoint").map((j) => j.path)).toEqual(
+      ["N0", "N1", "N2"].map((t) => `Topic/From PDFs/${t}/${t}.md`));
+    expect(c.marked.length).toBe(1);
+  });
+
+  test("a failing markProcessed after the jobs were queued does not retry the run (no second overview, no duplicate jobs)", async () => {
+    const c = chunkSetup();
+    (c.flow as any).deps.markProcessed = async () => { throw new ApiError("disk busy", 503); };
+    const q = queueFor(c);
+    q.add(job("Topic/a.pdf"));
+    await q.idle();
+    expect(c.order.filter((o) => o === "write")).toEqual(["write"]);
+    expect(c.enqueued.filter((j) => j.kind === "keypoint")).toHaveLength(3);
   });
 
   test("cache is cleared after success: re-running the same bytes re-extracts every chunk", async () => {
@@ -484,36 +570,36 @@ describe("chunk cache", () => {
     const q = queueFor(c);
     q.add(job("Topic/a.pdf"));
     await q.idle();
-    c.extract.mockClear();
+    c.overview.mockClear();
     delete c.processed[await sha256(pdf3)];
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
   });
 
   test("cache is cleared on non-retryable failure", async () => {
     const c = chunkSetup();
     impl(c, 1, () => new ApiError("bad request", 400));
     await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).resolves.toBeUndefined();
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1]);
-    c.extract.mockClear();
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1]);
+    c.overview.mockClear();
     impl(c, -1, () => new Error("x"));
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
   });
 
   test("cache is cleared on cancellation", async () => {
     const c = chunkSetup();
     const sig = { cancelled: false };
-    c.extract.mockImplementation(async (...a: any[]) => {
+    c.overview.mockImplementation(async (...a: any[]) => {
       if (a[3] === 1) sig.cancelled = true;
-      return { summary: "s", notes: [note("Anatomy", `N${a[3]}`, ["k"], "1")] };
+      return ov(`N${a[3]}`);
     });
     await c.flow.run(job("Topic/a.pdf"), sig, noCp);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1]);
-    c.extract.mockClear();
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1]);
+    c.overview.mockClear();
     impl(c, -1, () => new Error("x"));
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
   });
 
   test("dropCache(path) forgets chunks of a job the queue gave up on", async () => {
@@ -521,10 +607,10 @@ describe("chunk cache", () => {
     impl(c, 1, () => new ApiError("overloaded", 503));
     await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(ApiError);
     c.flow.dropCache("Topic/a.pdf");
-    c.extract.mockClear();
+    c.overview.mockClear();
     impl(c, -1, () => new Error("x"));
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.extract.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
+    expect(c.overview.mock.calls.map((x) => x[3])).toEqual([0, 1, 2]);
   });
 });
 
@@ -537,18 +623,19 @@ describe("progress events", () => {
     return { c, events, kinds: () => events.map((x) => x[1]) };
   }
 
-  test("3-chunk pdf emits 'Preparing…', chunk 1/3, 2/3, 3/3 steps then done with folder and note counts", async () => {
+  test("3-chunk pdf emits 'Preparing…', chunk 1/3, 2/3, 3/3, the merge step, then done with the key point count", async () => {
     const { c, events, kinds } = withSink();
     c.settings.pdfPagesPerChunk = 1;
     c.files.set("Topic/a.pdf", pdf3);
-    c.extract.mockImplementation(async (...a: any[]) => ({ summary: "s", notes: [note("Anatomy", `N${a[3]}`, ["k"], String(a[3] + 1))] }));
+    c.overview.mockImplementation(async (...a: any[]) => ov(`N${a[3]}`));
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(kinds()).toEqual([
       { kind: "step", text: "Preparing a.pdf…" },
       { kind: "step", text: "Analysing a.pdf (chunk 1/3)…" },
       { kind: "step", text: "Analysing a.pdf (chunk 2/3)…" },
       { kind: "step", text: "Analysing a.pdf (chunk 3/3)…" },
-      { kind: "done", folders: 1, notes: 3 },
+      { kind: "step", text: "Picking the top 5 key points…" },
+      { kind: "done", folders: 3, notes: 1 },
     ]);
     expect(events.every((e) => e[0] === "Topic/a.pdf" && e[2].kind === "pdf" && e[2].resumed === false)).toBe(true);
     expect(c.infos).toEqual([]); // with a sink the hub shows the notice
@@ -568,7 +655,7 @@ describe("progress events", () => {
     e2.c.settings.pdfPagesPerChunk = 1;
     e2.c.files.set("Topic/a.pdf", pdf3);
     const sig = { cancelled: false };
-    e2.c.extract.mockImplementation(async () => { sig.cancelled = true; return { summary: "s", notes: [] }; });
+    e2.c.overview.mockImplementation(async () => { sig.cancelled = true; return ov(); });
     await e2.c.flow.run(job("Topic/a.pdf"), sig, noCp);
     expect(e2.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
     expect(e2.kinds().filter((e) => e.kind === "failed" || e.kind === "done")).toHaveLength(1);
@@ -584,17 +671,15 @@ describe("progress events", () => {
       { kind: "failed", error: "no Claude API key — add it in the plugin settings" },
     ]);
 
+    // A PDF outside any research root is no longer a failure: it gets its own folder.
     const b = withSink();
     b.c.files.set("Other/a.pdf", pdf1);
     await b.c.flow.run(job("Other/a.pdf"), noSignal, noCp);
-    expect(b.kinds()).toEqual([
-      { kind: "step", text: "Preparing a.pdf…" },
-      { kind: "failed", error: "it is not inside a researched folder" },
-    ]);
+    expect(b.kinds().at(-1)).toEqual({ kind: "done", folders: 1, notes: 1 });
 
     const d = withSink();
     d.c.files.set("Topic/a.pdf", pdf1);
-    d.c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    d.c.overview.mockRejectedValue(new ApiError("bad request", 400));
     await d.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(d.kinds().at(-1)).toEqual({ kind: "failed", error: "bad request" });
   });
@@ -610,7 +695,7 @@ describe("progress events", () => {
   test("retryable chunk error emits the retry step and rethrows", async () => {
     const { c, kinds } = withSink();
     c.files.set("Topic/a.pdf", pdf1);
-    c.extract.mockRejectedValue(new ApiError("overloaded", 529));
+    c.overview.mockRejectedValue(new ApiError("overloaded", 529));
     await expect(c.flow.run(job("Topic/a.pdf"), noSignal, noCp)).rejects.toBeInstanceOf(ApiError);
     expect(kinds().at(-1)).toEqual({ kind: "step", text: "Retrying a.pdf after a temporary error…" });
     expect(kinds().some((e) => e.kind === "failed" || e.kind === "done")).toBe(false);
@@ -642,11 +727,11 @@ describe("pdf run identity after cancel and across flows", () => {
     (c.flow as any).deps.progress = (p: string, e: Progress, src: ProgressSource) => { events.push([p, e, src]); };
     c.files.set("Topic/a.pdf", pdf3);
     const sig = { cancelled: false };
-    c.extract.mockImplementation(async () => { sig.cancelled = true; throw new ApiError("overloaded", 503); });
+    c.overview.mockImplementation(async () => { sig.cancelled = true; throw new ApiError("overloaded", 503); });
     await expect(c.flow.run(job("Topic/a.pdf"), sig, noCp)).rejects.toBeInstanceOf(ApiError);
     expect(events.some((x) => x[1].kind === "step" && x[1].text.startsWith("Retrying"))).toBe(false);
     const first = events[0][2].runId;
-    c.extract.mockReset();
+    c.overview.mockReset();
     c.files.set("Topic/b.pdf", pdf3);
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp).catch(() => {});
     expect(events.at(-1)![2].runId).not.toBe(first);
@@ -672,7 +757,7 @@ describe("pdf pre-cancel", () => {
     (c.flow as any).deps.progress = (_p: string, e: Progress) => { events.push(e); };
     c.files.set("Topic/a.pdf", pdf3);
     await c.flow.run(job("Topic/a.pdf"), { cancelled: true }, noCp);
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
     expect(events).toEqual([]);
   });
 });
@@ -697,7 +782,7 @@ describe("Task 16: outcomes go only through the sink when one exists", () => {
     expect(b.events.at(-1)).toEqual({ kind: "failed", error: "the PDF is encrypted" });
     expect([...b.c.errors, ...b.c.infos]).toEqual([]);
     // non-retryable chunk error
-    const d = withSink(); d.c.files.set("Topic/a.pdf", pdf1); d.c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    const d = withSink(); d.c.files.set("Topic/a.pdf", pdf1); d.c.overview.mockRejectedValue(new ApiError("bad request", 400));
     await d.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(d.events.at(-1)).toEqual({ kind: "failed", error: "bad request" });
     expect([...d.c.errors, ...d.c.infos]).toEqual([]);
@@ -714,12 +799,14 @@ describe("Task 16: outcomes go only through the sink when one exists", () => {
     const nb = setup(); nb.files.set("Topic/s.pdf", encrypted);
     await nb.flow.run(job("Topic/s.pdf"), noSignal, noCp);
     expect(nb.errors).toEqual(["Could not analyse s.pdf: the PDF is encrypted"]);
-    const nd = setup(); nd.files.set("Topic/a.pdf", pdf1); nd.extract.mockRejectedValue(new ApiError("bad request", 400));
+    const nd = setup(); nd.files.set("Topic/a.pdf", pdf1); nd.overview.mockRejectedValue(new ApiError("bad request", 400));
     await nd.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(nd.errors).toEqual(["Could not analyse a.pdf: bad request"]);
+    // Success has no flow notice any more: the hub turns `done` into "Overview ready…".
     const ne = setup(); ne.files.set("Topic/a.pdf", pdf1);
     await ne.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(ne.infos).toEqual(["Extracted 1 notes from a.pdf"]);
+    expect([...ne.infos, ...ne.errors]).toEqual([]);
+    expect(ne.marked).toHaveLength(1);
   });
 });
 
@@ -735,7 +822,7 @@ describe("fix round 1: pdf failure notices carry one prefix", () => {
     await a.flow.run(job("Topic/s.pdf"), noSignal, noCp);
     const b = setup(); (b.flow as any).deps.progress = hub.sink; b.files.set("Topic/k.pdf", pdf1); b.client.v = null;
     await b.flow.run(job("Topic/k.pdf"), noSignal, noCp);
-    const c = setup(); (c.flow as any).deps.progress = hub.sink; c.files.set("Topic/e.pdf", pdf1); c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    const c = setup(); (c.flow as any).deps.progress = hub.sink; c.files.set("Topic/e.pdf", pdf1); c.overview.mockRejectedValue(new ApiError("bad request", 400));
     await c.flow.run(job("Topic/e.pdf"), noSignal, noCp);
     expect(notices).toEqual([
       "Could not analyse s.pdf: the PDF is encrypted",
@@ -760,17 +847,19 @@ describe("where PDF output goes", () => {
     expect(await c.flow.plan("paper.PDF")).toEqual({ container: "paper", asRoot: true, root: null });
   });
 
-  test("run decides the case through plan(): inside a root the extraction still works; outside a root it reports (until the overview writer lands)", async () => {
+  test("run decides the case through plan(): inside a root the overview goes to Sources; outside a root to '<dir>/<stem>' (collision-safe)", async () => {
     const c = setup();
     const planned: string[] = [];
     const real = c.flow.plan.bind(c.flow);
     c.flow.plan = async (p: string) => { planned.push(p); return real(p); };
     drop(c, "Topic/a.pdf", pdf1);
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
-    expect(c.infos).toEqual(["Extracted 1 notes from a.pdf"]);
+    expect(c.vault.files.has("Topic/Sources/a - Overview.md")).toBe(true);
+    c.vault.folders.add("Docs/b");
     drop(c, "Docs/b.pdf", pdf3);
     await c.flow.run(job("Docs/b.pdf"), noSignal, noCp);
-    expect(c.errors).toEqual(["Could not analyse b.pdf: it is not inside a researched folder"]);
+    expect(c.vault.files.get("Docs/b (2)/b - Overview.md")).toContain("research-root: true");
+    expect(c.errors).toEqual([]);
     expect(planned).toEqual(["Topic/a.pdf", "Docs/b.pdf"]);
   });
 });
@@ -783,8 +872,8 @@ describe("explicit triggers and one-by-one confirmation", () => {
     await c.flow.onFileEvent("Topic/paper+.pdf");
     expect(c.enqueued).toEqual([tjob("Topic/paper.pdf")]);
     await c.flow.run(c.enqueued[0], noSignal, noCp);
-    expect(c.extract).toHaveBeenCalledTimes(1);
-    expect(c.infos).toEqual(["Extracted 1 notes from paper.pdf"]);
+    expect(c.overview).toHaveBeenCalledTimes(1);
+    expect(c.vault.files.has("Topic/Sources/paper - Overview.md")).toBe(true);
     expect(c.marked).toEqual([await sha256(pdf1)]);
   });
 
@@ -798,11 +887,11 @@ describe("explicit triggers and one-by-one confirmation", () => {
     const restored = markResumed([job("Topic/a.pdf"), job("Topic/b.pdf"), research]);
     expect(restored).toEqual([{ ...job("Topic/a.pdf"), resume: true }, { ...job("Topic/b.pdf"), resume: true }, research]);
     await c.flow.run(restored[0], noSignal, noCp);
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
     expect([...c.infos, ...c.errors]).toEqual([]);
     // A restored job that never finished still runs.
     await c.flow.run(restored[1], noSignal, noCp);
-    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.overview).toHaveBeenCalledTimes(1);
   });
 
   test("a single pdf over confirmAbovePages asks once; declined enqueues nothing but the file is still renamed back; under the limit never asks", async () => {
@@ -908,7 +997,7 @@ describe("fix round 1: a restored job is skipped only if it finished after it wa
     c.files.set("Topic/a.pdf", pdf1);
     c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d", at: NOW - 30 * 86_400_000 } as any;
     await c.flow.run(restoredJob("Topic/a.pdf", NOW), noSignal, noCp);
-    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.overview).toHaveBeenCalledTimes(1);
   });
 
   test("processed after the trigger (finished, then the app closed before the queue saved) + restored job -> skipped", async () => {
@@ -916,7 +1005,7 @@ describe("fix round 1: a restored job is skipped only if it finished after it wa
     c.files.set("Topic/a.pdf", pdf1);
     c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d", at: NOW + 5000 } as any;
     await c.flow.run(restoredJob("Topic/a.pdf", NOW), noSignal, noCp);
-    expect(c.extract).not.toHaveBeenCalled();
+    expect(c.overview).not.toHaveBeenCalled();
     expect([...c.infos, ...c.errors]).toEqual([]);
   });
 
@@ -925,7 +1014,7 @@ describe("fix round 1: a restored job is skipped only if it finished after it wa
     c.files.set("Topic/a.pdf", pdf1);
     c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d" };
     await c.flow.run(restoredJob("Topic/a.pdf", NOW), noSignal, noCp);
-    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.overview).toHaveBeenCalledTimes(1);
   });
 
   test("a trigger stamps its job with triggeredAt", async () => {

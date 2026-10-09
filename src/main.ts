@@ -14,6 +14,7 @@ import type { VaultLike } from "./vault/writer";
 import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
 import { PdfFlow, markResumed } from "./flows/pdfFlow";
+import { KeypointFlow } from "./flows/keypointFlow";
 import { decideRename } from "./events";
 import { ProgressHub } from "./ui/hub";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
@@ -97,6 +98,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     // eslint-disable-next-line prefer-const
     let pdfFlow: PdfFlow;
     // eslint-disable-next-line prefer-const
+    let keypointFlow: KeypointFlow;
+    // eslint-disable-next-line prefer-const
     let queue: JobQueue;
 
     const spinner = new ExplorerSpinner(document);
@@ -149,6 +152,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
           pdfFlow.dropCache();
           researchFlow.endRun();
           pdfFlow.endRun();
+          keypointFlow.endRun();
         },
         persistPending: (list) => {
           this.data.pendingReviews = list;
@@ -160,7 +164,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     queue = new JobQueue(
       async (job, signal, checkpoint) => {
         if (job.kind === "research") return researchFlow.run(job, signal, checkpoint);
+        // Both PDF stages (the overview and the key point jobs) follow the "Analyse PDFs" setting.
         if (!settings().processPdfs) return;
+        if (job.kind === "keypoint") return keypointFlow.run(job, signal, checkpoint);
         return pdfFlow.run(job, signal, checkpoint);
       },
       {
@@ -174,9 +180,11 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         rand: Math.random,
         onChange: (r, q) => hub.onQueueChange(r, q),
         onFailed: (job, err) => {
-          pdfFlow.dropCache(job.path);
           // The queue gave up, so forget any pending retry; the hub decides the notice (and dedupes it).
-          if (job.kind === "research") researchFlow.endRun(job.path); else pdfFlow.endRun(job.path);
+          // A key point's events (and so the hub's failure) are keyed by its folder; the hub derives that path.
+          if (job.kind === "research") researchFlow.endRun(job.path);
+          else if (job.kind === "keypoint") keypointFlow.endRun(job.path);
+          else { pdfFlow.dropCache(job.path); pdfFlow.endRun(job.path); }
           hub.onQueueFailed(job, err);
         },
         onPersistError: (e) => {
@@ -224,6 +232,15 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         const f = vault.getAbstractFileByPath(from);
         if (f) await this.app.fileManager.renameFile(f, to);
       },
+    });
+
+    keypointFlow = new KeypointFlow({
+      client: clientFor,
+      writer,
+      notify,
+      progress: hub.sink,
+      settings,
+      today: localDate,
     });
 
     const catalog = new ModelCatalog({

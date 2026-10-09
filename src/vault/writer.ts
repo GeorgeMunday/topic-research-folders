@@ -1,6 +1,6 @@
 import { sanitiseName, uniqueName } from "../names";
-import { renderNote, renderOverview, renderPdfOverview, renderSourceSummary } from "./noteTemplate";
-import type { KeyPoint, NoteContent, Outline, PdfExtraction, PdfOverview, SubfolderNotes } from "../types";
+import { renderNote, renderOverview, renderPdfOverview } from "./noteTemplate";
+import type { KeyPoint, NoteContent, Outline, PdfOverview, SubfolderNotes } from "../types";
 
 export interface VaultLike {
   exists(path: string): boolean;
@@ -132,45 +132,6 @@ export class VaultWriter {
     const path = join(parent, `${name}.md`);
     await this.vault.createFile(path, renderOverview(outline, links, date));
     return path;
-  }
-
-  async writeExtracted(
-    root: string,
-    topic: string,
-    pdfName: string,
-    ex: PdfExtraction,
-    date: string,
-  ): Promise<{ subfolder: string; title: string; folder: string }[]> {
-    const reserved = new Set(["from pdfs", "sources"]);
-    const existing = new Map(
-      this.listSubfolders(root)
-        .filter((n) => !reserved.has(n.toLowerCase()))
-        .map((n) => [n.toLowerCase(), n]),
-    );
-    const used = new Set<string>();
-    const created: { subfolder: string; title: string; folder: string }[] = [];
-    for (const note of ex.notes) {
-      const match = note.isNew ? undefined : existing.get(note.subfolder.toLowerCase());
-      let folder: string;
-      if (match) {
-        folder = join(root, match);
-      } else {
-        folder = await this.ensureFolder(join(root, "From PDFs", sanitiseName(note.subfolder)));
-      }
-      const title = await this.writeUniqueNote(folder, note.title, used, () =>
-        renderNote(note, { topic, subtopic: note.subfolder, date, source: pdfName, pages: note.pages }),
-      );
-      created.push({ subfolder: note.subfolder, title, folder });
-    }
-
-    const sourcesFolder = await this.ensureFolder(join(root, "Sources"));
-    const stem = sanitiseName(pdfName.replace(/\.pdf$/i, ""));
-    const summaryName = uniqueName(`${stem} - Summary`, (c) => this.taken(sourcesFolder, `${c}.md`));
-    await this.vault.createFile(
-      join(sourcesFolder, `${summaryName}.md`),
-      renderSourceSummary(pdfName, topic, ex.summary, created, date),
-    );
-    return created;
   }
 
   /**

@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { extractJson, parseOutline, parseNotes, parsePdfExtraction, parsePdfOverview, ParseError } from "../src/research/parse";
+import { extractJson, parseOutline, parseNotes, parsePdfOverview, ParseError } from "../src/research/parse";
 
 test("extracts fenced JSON", () => expect(extractJson('x\n```json\n{"a":1}\n```')).toEqual({ a: 1 }));
 test("extracts balanced object from prose", () => expect(extractJson('Sure! {"a":{"b":"}"}} done')).toEqual({ a: { b: "}" } }));
@@ -12,14 +12,6 @@ test("parseOutline with zero subfolders throws", () =>
   expect(() => parseOutline('{"topic":"T","summary":"s","subfolders":[]}', 6)).toThrow(ParseError));
 test("parseNotes rejects missing keyPoints", () =>
   expect(() => parseNotes('{"notes":[{"title":"x","summary":"s","plainWords":"p"}]}', 1)).toThrow(ParseError));
-test("parsePdfExtraction marks unknown subfolder as new", () => {
-  const r = parsePdfExtraction(JSON.stringify({ summary: "s", notes: [
-    { subfolder: "anatomy", isNew: false, title: "A", summary: "s", keyPoints: ["k (p. 1)"], plainWords: "p", pages: "1" },
-    { subfolder: "Jets", isNew: false, title: "B", summary: "s", keyPoints: ["k (p. 2)"], plainWords: "p", pages: "2" } ] }),
-    ["Anatomy"]);
-  expect(r.notes[0]).toMatchObject({ subfolder: "Anatomy", isNew: false }); // case-insensitive match
-  expect(r.notes[1]).toMatchObject({ subfolder: "Jets", isNew: true });
-});
 test("parseOutline defaults missing why to empty and trims", () => {
   const r = parseOutline('{"topic":" T ","summary":"s","subfolders":[{"name":"  A  "}]}', 6);
   expect(r.topic).toBe("T");

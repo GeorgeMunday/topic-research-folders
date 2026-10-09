@@ -64,7 +64,6 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
       if (e) throw e;
       return [note(`${s.name} note`)];
     },
-    async extractPdf(): Promise<never> { throw new Error("unused"); },
   };
   const deps: ResearchDeps = {
     client: () => (over.keyless ? null : client),

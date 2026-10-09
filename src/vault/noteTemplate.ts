@@ -89,48 +89,6 @@ export function renderOverview(
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }
 
-export function renderSourceSummary(
-  pdfName: string,
-  topic: string,
-  summary: string,
-  links: { subfolder: string; title: string; folder?: string }[],
-  date: string,
-): string {
-  const frontmatter = [
-    "---",
-    `topic: ${yamlString(topic)}`,
-    `source: ${yamlString(`[[${pdfName}]]`)}`,
-    `created: ${date}`,
-    "tags: [research]",
-    "---",
-  ];
-
-  const bySubfolder = new Map<string, string[]>();
-  for (const link of links) {
-    const targets = bySubfolder.get(link.subfolder) ?? [];
-    targets.push(noteLink(link.title, link.folder));
-    bySubfolder.set(link.subfolder, targets);
-  }
-  const sections: string[] = [];
-  for (const [subfolder, targets] of bySubfolder) {
-    sections.push(`- **${oneLine(subfolder)}**`);
-    for (const target of targets) sections.push(`  - ${target}`);
-  }
-
-  const body = [
-    `# ${oneLine(pdfName)} - Summary`,
-    "",
-    `> ${oneLine(summary)}`,
-    "",
-    "## Extracted notes",
-    "",
-    ...sections,
-    "",
-    ...QA_BLOCK,
-  ];
-  return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
-}
-
 /** The PDF overview (Stage 1): one bullet per key point linking its entry note; never padded. */
 export function renderPdfOverview(
   o: { pdfName: string; overview: PdfOverview; links: { point: KeyPoint; target: string }[]; asRoot: boolean },

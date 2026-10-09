@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { renderNote, renderOverview, renderPdfOverview, renderSourceSummary } from "../src/vault/noteTemplate";
+import { renderNote, renderOverview, renderPdfOverview } from "../src/vault/noteTemplate";
 import type { NoteContent } from "../src/types";
 
 const note: NoteContent = { title: "Event horizon", summary: "The point of no return.",
@@ -44,10 +44,6 @@ test("overview is marked as research root and links notes", () => {
   expect(md).toContain("research-root: true");
   expect(md).toContain("- **Anatomy**\n  - [[Event horizon]]");
   expect(md).toContain("## Questions & Answers");
-});
-test("source summary links extracted notes", () => {
-  const md = renderSourceSummary("paper.pdf", "T", "Sum", [{ subfolder: "A", title: "X" }], "2026-10-08");
-  expect(md).toContain('source: "[[paper.pdf]]"'); expect(md).toContain("[[X]]");
 });
 test("quotes in frontmatter escaped", () => {
   expect(renderNote(note, { topic: 'The "Big" one', subtopic: "A", date: "2026-10-08" }))
@@ -104,15 +100,6 @@ test("folder with a space and parentheses is used verbatim", () => {
   const md = renderOverview({ topic: "T", summary: "S", subfolders: [] },
     [{ subfolder: "Anatomy (2)", noteTitles: ["X"], folder: "T/Anatomy (2)" }], "2026-10-08");
   expect(md).toContain("[[T/Anatomy (2)/X|X]]");
-});
-
-test("source summary uses full paths when folder is given, bare titles otherwise", () => {
-  const md = renderSourceSummary("p.pdf", "T", "Sum", [
-    { subfolder: "A", title: "X", folder: "T/A" },
-    { subfolder: "B", title: "Y" },
-  ], "2026-10-08");
-  expect(md).toContain("[[T/A/X|X]]");
-  expect(md).toContain("[[Y]]");
 });
 
 // --- PDF overview (item 10) ---

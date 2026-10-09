@@ -1,12 +1,11 @@
-import type { Outline, NoteContent, PdfExtraction, PdfOverview, SubfolderSuggestion } from "../types";
-import { outlinePrompt, notesPrompt, pdfPrompt, pdfOverviewPrompt, mergeOverviewsPrompt } from "./prompts";
-import { parseOutline, parseNotes, parsePdfExtraction, parsePdfOverview, ParseError } from "./parse";
+import type { Outline, NoteContent, PdfOverview, SubfolderSuggestion } from "../types";
+import { outlinePrompt, notesPrompt, pdfOverviewPrompt, mergeOverviewsPrompt } from "./prompts";
+import { parseOutline, parseNotes, parsePdfOverview, ParseError } from "./parse";
 import { ApiError } from "../jobs/queue";
 
 export interface ResearchClient {
   outline(topic: string, parents: string[], max: number): Promise<Outline>;
   notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number): Promise<NoteContent[]>;
-  extractPdf(topic: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfExtraction>;
   /** Stage 1 for one chunk: the document block first, no tools. */
   overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview>;
   /** Picks the top 5 key points overall from the chunk results; text only, no document, no tools. */
@@ -76,14 +75,6 @@ export class ClaudeClient implements ResearchClient {
 
   async notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number): Promise<NoteContent[]> {
     return parseNotes(await this.call(notesPrompt(topic, parents, s, count), 8192, true), count);
-  }
-
-  async extractPdf(topic: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfExtraction> {
-    const content = [
-      { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
-      { type: "text", text: pdfPrompt(topic, subfolders, pageOffset) },
-    ];
-    return parsePdfExtraction(await this.call(content, 16000, false), subfolders);
   }
 
   async overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview> {

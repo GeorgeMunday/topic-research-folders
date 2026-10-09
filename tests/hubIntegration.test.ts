@@ -49,7 +49,6 @@ function world() {
   const client = {
     async outline(topic: string): Promise<Outline> { calls.outline++; return { topic, summary: "sum", subfolders: [A, B, C] }; },
     async notes(_t: string, _p: string[], s: SubfolderSuggestion) { calls.notes.push(s.name); return [note(`${s.name} note`)]; },
-    async extractPdf(): Promise<never> { throw new Error("unused"); },
   };
   const notices: { text: string; error: boolean; action?: { label: string; run: () => void } }[] = [];
   const spinners: string[][] = [];
