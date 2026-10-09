@@ -36,7 +36,7 @@ const RESOLVED_ASK = `Also give "resolvedTopic": the full name of the topic once
 export function outlinePrompt(topic: string, parents: string[], max: number, ctx = ""): string {
   return `You are a research assistant. Plan a folder outline for the topic: "${clean(topic)}".
 ${context(parents)}
-${block(ctx)}Propose between 3 and ${max} non-overlapping subfolders that together cover the topic. Each "name" must be 5 words or fewer; "why" is one short sentence.
+${block(ctx)}Propose between 3 and ${max} non-overlapping subfolders that together cover the topic, listed in the order a learner should study them, simplest first. Each "name" must be 5 words or fewer; "why" is one short sentence.
 ${RESOLVED_ASK}
 ${SUBJECT_ASK.replace("from the topic and", "from the resolved topic and")}
 

@@ -11,6 +11,8 @@ export interface Settings {
   /** True once the user picked a model from the dropdown (an automatic selection does not count). */
   modelChosen: boolean;
   useWebSearch: boolean;
+  /** Prefix created folders with 01 - , 02 - … in learning order. */
+  numberFolders: boolean;
   triggerSuffix: string;
   stripSuffix: boolean;
   maxSubfolders: number;
@@ -38,6 +40,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: "claude-sonnet-5-5",
   modelChosen: false,
   useWebSearch: true,
+  numberFolders: true,
   triggerSuffix: "+",
   stripSuffix: true,
   maxSubfolders: 6,
@@ -274,6 +277,11 @@ export class SettingsTab extends PluginSettingTab {
       .setName("Use web search")
       .setDesc("Let Claude search the web while researching.")
       .addToggle((t) => t.setValue(s.useWebSearch).onChange((v) => { s.useWebSearch = v; save(); this.rerenderModels(); }));
+
+    new Setting(containerEl)
+      .setName("Number folders in learning order")
+      .setDesc("Prefix the folders you create with 01 - , 02 - … in the order shown in the review window.")
+      .addToggle((t) => t.setValue(s.numberFolders).onChange((v) => { s.numberFolders = v; save(); }));
 
     const suffix = new Setting(containerEl)
       .setName("Trigger suffix")

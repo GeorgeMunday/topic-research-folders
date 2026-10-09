@@ -49,7 +49,7 @@ export class SuggestionModal extends Modal {
   }
 
   private create(): void {
-    const approved = selectApproved(this.rows);
+    const approved = selectApproved(this.rows, { number: this.hooks?.numberFolders === true });
     if (approved.length === 0) return;
     this.settle(approved);
     this.close();

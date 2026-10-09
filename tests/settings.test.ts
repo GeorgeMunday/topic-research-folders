@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, mergeData, validateSuffix } from "../src/settings";
 
 describe("settings", () => {
   test("defaults", () =>
-    expect(DEFAULT_SETTINGS).toEqual({ apiKey: "", model: "claude-sonnet-5-5", modelChosen: false, useWebSearch: true,
+    expect(DEFAULT_SETTINGS).toEqual({ apiKey: "", model: "claude-sonnet-5-5", modelChosen: false, useWebSearch: true, numberFolders: true,
       triggerSuffix: "+", stripSuffix: true, maxSubfolders: 6, notesPerSubfolder: 3, maxDepth: 3, maxConcurrent: 2,
       maxRetries: 4, processPdfs: true, pdfPagesPerChunk: 50, confirmAbovePages: 200 }));
 

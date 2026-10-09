@@ -19,6 +19,8 @@ export interface HubUi {
 /** What the review window needs besides the outline: the folder, and a way to ask for new suggestions. */
 export interface ReviewHooks {
   path: string;
+  /** Prefix the created folders with 01 - , 02 - … in the order shown. */
+  numberFolders?: boolean;
   /** New suggestions for an edited topic; the hub keeps the result as the entry's outline (used by Create). */
   resuggest?(topic: string): Promise<Outline>;
 }
@@ -30,6 +32,8 @@ export interface HubActions {
   resuggest?(path: string, topic: string): Promise<Outline>;
   /** Starts the run again for a failed path (`kind` is what failed: research or pdf). */
   retry?(path: string, kind: ProgressSource["kind"]): void;
+  /** The "Number folders in learning order" setting. */
+  numberFolders?(): boolean;
   /** False when the folder no longer exists in the vault. */
   pathExists(path: string): boolean;
   persistPending(list: PendingReview[]): void;
@@ -160,6 +164,7 @@ export class ProgressHub {
       const resuggest = this.actions.resuggest;
       result = this.ui.reviewModal(entry.outline, {
         path: entry.path,
+        ...(this.actions.numberFolders ? { numberFolders: this.actions.numberFolders() } : {}),
         ...(resuggest ? {
           resuggest: async (topic: string) => {
             const outline = await resuggest.call(this.actions, open.path, topic);

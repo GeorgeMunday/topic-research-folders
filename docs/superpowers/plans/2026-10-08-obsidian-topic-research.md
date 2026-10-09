@@ -1581,7 +1581,7 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - [x] Tests (`tests/suggestionRows.test.ts`): full-width CSS, inside line, select all/none, add own row (empty ignored), move up/down/drag keeps order, keyboard handler. **Commit** `feat: pop-up shows context, select all, add and reorder`.
 
 ### Task 26: Learning order (section 3)
-- [ ] Tests: prompt asks simplest first, zero-padded prefixes follow the final order, collisions ` (2)`, setting off → no prefix, Study path list. **Commit** `feat: number folders in learning order`.
+- [x] Tests: prompt asks simplest first, zero-padded prefixes follow the final order, collisions ` (2)`, setting off → no prefix, Study path list. **Commit** `feat: number folders in learning order`.
 
 ### Task 27: Sources (section 4)
 - [ ] Tests: citation parsing, dedupe, cap 5, omission, PDF note source line. **Commit** `feat: list real sources at the end of each note`.

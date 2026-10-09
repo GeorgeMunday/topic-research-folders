@@ -1,6 +1,8 @@
 import type { Outline, SubfolderSuggestion } from "../types";
 import { sanitiseName, uniqueName } from "../names";
 
+const pad = (n: number, total: number) => String(n).padStart(Math.max(2, String(total).length), "0");
+
 /** The muted line under the title: where the folder sits ("Inside: c# › intro"). */
 export function insideLine(path: string): string {
   return `Inside: ${path.split("/").filter((p) => p !== "").join(" › ")}`;
@@ -45,19 +47,22 @@ export function keyAction(key: string, target: "text" | "button" | "other"): "cr
 }
 
 /**
- * Checked rows only, with edited names sanitised (blank edits fall back to the original).
+ * Checked rows only, in the order shown, with edited names sanitised (blank edits fall back to the original;
+ * rows with no name at all are ignored). `number` prefixes "01 - ", "02 - " … in that order.
  * Names are made unique case-insensitively (the flow tracks progress by name) and a name that
  * equals a reserved folder gets " notes" appended.
  */
-export function selectApproved(rows: SuggestionRow[]): SubfolderSuggestion[] {
+export function selectApproved(rows: SuggestionRow[], opts: { number?: boolean } = {}): SubfolderSuggestion[] {
   const seen = new Set<string>();
-  return rows
-    .filter((r) => r.checked && (r.name.trim() !== "" || r.suggestion.name.trim() !== ""))
-    .map((r) => {
+  const chosen = rows.filter((r) => r.checked && (r.name.trim() !== "" || r.suggestion.name.trim() !== ""));
+  return chosen
+    .map((r, i) => {
       let name = sanitiseName(r.name.trim() === "" ? r.suggestion.name : r.name);
       if (RESERVED.has(name.toLowerCase())) name = `${name} notes`;
       name = uniqueName(name, (c) => seen.has(c.toLowerCase()));
       seen.add(name.toLowerCase());
+      // Numbered after sanitising, so the number never counts against the name length limit.
+      if (opts.number) name = `${pad(i + 1, chosen.length)} - ${name}`;
       return { name, why: r.suggestion.why };
     });
 }

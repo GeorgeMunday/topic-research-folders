@@ -1,4 +1,4 @@
-import { sanitiseName, uniqueName } from "../names";
+import { sanitiseFolderName, sanitiseName, stripOrder, uniqueName } from "../names";
 import { buildContext, type FolderContext } from "../context";
 import { oneLine, renderNote, renderOverview, renderPdfOverview } from "./noteTemplate";
 import { quizFileNames, renderAnswers, renderQuestions } from "../quiz";
@@ -137,19 +137,21 @@ export class VaultWriter {
     date: string,
   ): Promise<{ folder: string; noteTitles: string[] }> {
     await this.ensureFolder(parent);
-    const name = uniqueName(sanitiseName(sn.subfolder), (c) => this.taken(parent, c));
+    const name = uniqueName(sanitiseFolderName(sn.subfolder), (c) => this.taken(parent, c));
     const folder = join(parent, name);
+    // Notes and quiz files talk about the subfolder, not its position in the study path.
+    const subtopic = stripOrder(sn.subfolder);
     await this.makeFolder(folder);
     const used = new Set<string>();
     const noteTitles: string[] = [];
     for (const note of sn.notes) {
       noteTitles.push(
         await this.writeUniqueNote(folder, note.title, used, () =>
-          renderNote(note, { topic, subtopic: sn.subfolder, date }),
+          renderNote(note, { topic, subtopic, date }),
         ),
       );
     }
-    await this.writeQuiz(folder, topic, sn.subfolder, sn.notes, noteTitles, sn.quiz, date);
+    await this.writeQuiz(folder, topic, subtopic, sn.notes, noteTitles, sn.quiz, date);
     return { folder, noteTitles };
   }
 

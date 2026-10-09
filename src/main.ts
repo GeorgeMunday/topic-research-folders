@@ -149,6 +149,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
             ...(outline.subject ? { subject: outline.subject } : {}), ...(outline.codeLanguage ? { codeLanguage: outline.codeLanguage } : {}),
           }),
         resuggest: (path, topic) => researchFlow.resuggest(path, topic),
+        numberFolders: () => settings().numberFolders,
         retry: (path, kind) => {
           if (!needReady()) return;
           if (kind === "pdf") pdfFlow.retry(path);

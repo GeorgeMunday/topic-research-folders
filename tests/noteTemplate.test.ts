@@ -37,7 +37,7 @@ test("overview is marked as research root and links notes", () => {
   const md = renderOverview({ topic: "Black holes", summary: "S", subfolders: [] },
     [{ subfolder: "Anatomy", noteTitles: ["Event horizon"] }], "2026-10-08");
   expect(md).toContain("research-root: true");
-  expect(md).toContain("- **Anatomy**\n  - [[Event horizon]]");
+  expect(md).toContain("1. **Anatomy**\n  - [[Event horizon]]");
   expect(md).not.toContain("## Questions & Answers");
 });
 test("quotes in frontmatter escaped", () => {

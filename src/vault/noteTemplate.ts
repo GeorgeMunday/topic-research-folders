@@ -74,8 +74,8 @@ export function renderOverview(
   ];
 
   const sections: string[] = [];
-  for (const link of links) {
-    sections.push(`- **${oneLine(link.subfolder)}**`);
+  for (const [i, link] of links.entries()) {
+    sections.push(`${i + 1}. **${oneLine(link.subfolder)}**`);
     const reason = why.get(link.subfolder);
     if (reason) sections.push(`  ${reason}`);
     for (const title of link.noteTitles) sections.push(`  - ${noteLink(title, link.folder)}`);
@@ -86,7 +86,7 @@ export function renderOverview(
     "",
     `> ${oneLine(outline.summary)}`,
     "",
-    "## Subfolders",
+    "## Study path",
     "",
     ...sections,
   ];
