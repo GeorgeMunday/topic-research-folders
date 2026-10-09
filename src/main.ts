@@ -1,4 +1,4 @@
-import { Menu, Notice, Plugin, TFile, TFolder, requestUrl } from "obsidian";
+import { Menu, Notice, Plugin, TFile, TFolder, addIcon, requestUrl, setIcon } from "obsidian";
 import type { TAbstractFile } from "obsidian";
 import { DEFAULT_SETTINGS, SettingsTab, mergeData } from "./settings";
 import type { PluginData, Settings } from "./settings";
@@ -20,6 +20,9 @@ import { ProgressHub } from "./ui/hub";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
 import { SuggestionModal } from "./ui/SuggestionModal";
 import { ConfirmModal } from "./ui/ConfirmModal";
+import { ICON_ID, ICON_SVG_INNER } from "./icon";
+import { ribbonItems } from "./ui/ribbon";
+import type { MenuItem } from "./ui/ribbon";
 
 const ERROR_NOTICE_MS = 10000;
 // Long enough to reach the Review button.
@@ -35,6 +38,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
   private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [] };
   private saveChain: Promise<void> = Promise.resolve();
   private statusEl: HTMLElement | null = null;
+  private statusTextEl: HTMLElement | null = null;
   private stopFns: Array<() => void> = [];
 
   private persist(): Promise<void> {
@@ -130,10 +134,11 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     const hub = new ProgressHub(
       {
         notice: showNotice,
+        // The icon stays; only the text comes and goes.
         setStatus: (text) => {
-          if (!this.statusEl) return;
-          this.statusEl.setText(text);
-          this.statusEl.toggle(text !== "");
+          if (!this.statusTextEl) return;
+          this.statusTextEl.setText(text);
+          this.statusTextEl.toggle(text !== "");
         },
         setSpinners: (paths) => spinner.set(paths),
         reviewModal: (outline) => {
@@ -258,18 +263,37 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     });
     this.addSettingTab(new SettingsTab(this.app, this, { settings, save: () => this.persist(), catalog }));
 
-    this.statusEl = this.addStatusBarItem();
-    this.statusEl.setText("");
-    this.statusEl.addClass("trf-status");
-    this.statusEl.setAttribute("aria-label", "Research jobs");
-    this.statusEl.hide();
-    // Clicking the status text offers Cancel all / Review pending suggestions.
-    this.registerDomEvent(this.statusEl, "click", (evt) => {
-      const items = hub.menuItems();
-      if (items.length === 0) return;
+    addIcon(ICON_ID, ICON_SVG_INNER);
+
+    const openSettings = () => {
+      const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+      if (!setting) { new Notice("Open Settings, then Community plugins, then Topic Research Folders."); return; }
+      setting.open();
+      setting.openTabById(this.manifest.id);
+    };
+    // The same three entries behind the ribbon button and (when nothing is busy) the status bar item.
+    const menuEntries = (): MenuItem[] => ribbonItems({
+      review: () => { if (needReady()) guard(hub.review()); },
+      cancelAll: () => { if (needReady()) hub.cancelEverything(); },
+      openSettings,
+    }, fail);
+    const showMenu = (items: MenuItem[], evt: MouseEvent) => {
       const menu = new Menu();
       for (const it of items) menu.addItem((m) => m.setTitle(it.label).onClick(() => { try { it.run(); } catch (e) { fail(e); } }));
       menu.showAtMouseEvent(evt);
+    };
+    this.addRibbonIcon(ICON_ID, "Topic Research Folders", (evt) => showMenu(menuEntries(), evt));
+
+    this.statusEl = this.addStatusBarItem();
+    this.statusEl.addClass("trf-status");
+    this.statusEl.setAttribute("aria-label", "Topic Research Folders");
+    setIcon(this.statusEl.createSpan({ cls: "trf-status-icon" }), ICON_ID);
+    this.statusTextEl = this.statusEl.createSpan({ cls: "trf-status-text" });
+    this.statusTextEl.hide();
+    // While jobs run or reviews wait, clicking offers Cancel all / Review; otherwise the full menu.
+    this.registerDomEvent(this.statusEl, "click", (evt) => {
+      const items = hub.menuItems();
+      showMenu(items.length > 0 ? items : menuEntries(), evt);
     });
 
     const onCreated = (f: TAbstractFile) => {

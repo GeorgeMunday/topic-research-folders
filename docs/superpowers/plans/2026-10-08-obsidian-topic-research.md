@@ -1515,6 +1515,7 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - `NoteContent.extras` is optional. Invalid or missing extras never throw: if the extras object still has a usable general `example` the note falls back to `general`, otherwise the note has no extra section.
 - `ResearchClient.notes` now returns `NotesResult { notes, quiz }`. Questions and answers come from the **same call**; mismatched counts are trimmed to the shorter.
 - Answer links use the overview's unambiguous form `[[<folder path>/<Title>|<Title>]]` (renders as "Event horizon").
+- The quiz-flow wiring tests (`tests/quizFlow.test.ts`) were written after the writer/flow code, driven by the red `tests/quiz.test.ts`; `extractJson` now tries the whole reply first because code fences inside quiz strings (e.g. `println!("{}")`) were mistaken for the JSON wrapper.
 - Quiz files are written as a pair with a shared collision suffix (`... - Questions (2).md` / `... - Answers (2).md`) so the two links always match.
 
 ## File Structure (Tasks 20–23)
@@ -1537,16 +1538,16 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 ```
 
 ### Task 20: Folder context (section E, items 1–3)
-- [ ] Tests (`tests/context.test.ts`): plain folder chain; nested research roots (summary + subfolders); siblings listed without the target and with a "do not repeat" instruction; the 2,000-char trim keeps the nearest ancestors. Red, implement `src/context.ts`, wire into the research, PDF and key-point flows and all prompts, green. **Commit** `feat: give every research prompt the context of the folders above it`.
+- [x] Tests (`tests/context.test.ts`): plain folder chain; nested research roots (summary + subfolders); siblings listed without the target and with a "do not repeat" instruction; the 2,000-char trim keeps the nearest ancestors. Red, implement `src/context.ts`, wire into the research, PDF and key-point flows and all prompts, green. **Commit** `feat: give every research prompt the context of the folders above it`.
 
 ### Task 21: Subject-specific notes (section F, items 4–6)
-- [ ] Tests (`tests/subjects.test.ts`, extend parse/prompts/noteTemplate/flows): outline returns `subject`/`codeLanguage`, saved in Overview frontmatter, inherited by nested topics and PDFs, user edit wins; each subject renders its section between "In plain words" and "My notes"; code blocks carry the language tag; missing/invalid `extras` falls back without crashing. **Commit** `feat: subject-specific sections in notes`.
+- [x] Tests (`tests/subjects.test.ts`, extend parse/prompts/noteTemplate/flows): outline returns `subject`/`codeLanguage`, saved in Overview frontmatter, inherited by nested topics and PDFs, user edit wins; each subject renders its section between "In plain words" and "My notes"; code blocks carry the language tag; missing/invalid `extras` falls back without crashing. **Commit** `feat: subject-specific sections in notes`.
 
 ### Task 22: Questions and Answers files (section G, items 7–9)
-- [ ] Tests: no `## Questions & Answers` in any template (Task 3 snapshots updated); `<Subfolder> - Questions.md` / `- Answers.md` content; same API call; mismatch trimmed; coding questions carry code blocks. **Commit** `feat: separate Questions and Answers files per subfolder`.
+- [x] Tests: no `## Questions & Answers` in any template (Task 3 snapshots updated); `<Subfolder> - Questions.md` / `- Answers.md` content; same API call; mismatch trimmed; coding questions carry code blocks. **Commit** `feat: separate Questions and Answers files per subfolder`.
 
 ### Task 23: README, icon, description (section H, items 10–12)
-- [ ] Tests: manifest name/description (≤250 chars, ends with a period); icon.svg uses `currentColor`, `viewBox="0 0 100 100"`, no external references, and matches `ICON_SVG_INNER`; ribbon menu has the three items; README sections in the requested order; LICENSE is MIT. **Commit** `feat: README, icon, ribbon button and manifest description`.
+- [x] Tests: manifest name/description (≤250 chars, ends with a period); icon.svg uses `currentColor`, `viewBox="0 0 100 100"`, no external references, and matches `ICON_SVG_INNER`; ribbon menu has the three items; README sections in the requested order; LICENSE is MIT. **Commit** `feat: README, icon, ribbon button and manifest description`.
 
 ## Manual check (after Task 23)
 

@@ -1,7 +1,7 @@
 {
   "name": "topic-research-folders",
   "version": "0.1.0",
-  "description": "Create a folder ending in a trigger suffix and get an AI-researched subfolder outline and notes.",
+  "description": "Add + to a folder or PDF name to research it into subfolders of easy-to-read notes, with code examples and quiz files.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -9,7 +9,7 @@
     "test": "vitest run"
   },
   "license": "MIT",
-  "author": "georg",
+  "author": "George Munday",
   "dependencies": {
     "pdf-lib": "^1.17.1"
   },
