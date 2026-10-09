@@ -20,5 +20,22 @@
     "obsidian": "^1.14.4",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GeorgeMunday/topic-research-folders.git"
+  },
+  "homepage": "https://github.com/GeorgeMunday/topic-research-folders#readme",
+  "bugs": {
+    "url": "https://github.com/GeorgeMunday/topic-research-folders/issues"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "research",
+    "notes",
+    "pdf",
+    "anthropic",
+    "claude"
+  ]
 }

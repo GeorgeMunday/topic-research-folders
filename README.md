@@ -170,7 +170,13 @@ println!("{}", b);
 
 ## Install
 
-Copy `main.js`, `manifest.json` and `styles.css` into `<your vault>/.obsidian/plugins/topic-research-folders/` (create the folder if needed), then enable the plugin under Settings → Community plugins. To build the files yourself, run `npm install` and `npm run build`.
+**From Obsidian:** once the plugin is listed, open Settings → Community plugins → Browse, search for "Topic Research Folders", then Install and Enable.
+
+**From a release:** download `main.js`, `manifest.json` and `styles.css` (or the zip) from the [latest release](https://github.com/GeorgeMunday/topic-research-folders/releases/latest) and copy them into `<your vault>/.obsidian/plugins/topic-research-folders/` (create the folder if needed), then enable the plugin under Settings → Community plugins. With the BRAT plugin you can instead add `GeorgeMunday/topic-research-folders` and get updates automatically.
+
+**From source:** run `npm install`, `npm test` and `npm run build`, then copy the same three files. To publish a new version, change the version in `manifest.json`, `package.json` and `versions.json`, add a line to `CHANGELOG.md`, and push a tag with that version (for example `0.1.1`): a GitHub Action tests, builds and creates the release.
+
+Bugs and ideas: [open an issue](https://github.com/GeorgeMunday/topic-research-folders/issues).
 
 ## API key and cost
 
