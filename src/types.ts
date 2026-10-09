@@ -7,7 +7,8 @@ export interface PdfExtraction { summary: string; notes: ExtractedNote[]; }
 /** `summary` carries the reviewed outline's summary into the overview written by the approved job. */
 export type Job =
   | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string }
-  | { id: string; kind: "pdf"; path: string };
+  /** `resume`: restored from data.json after a restart (skipped when its content was already processed). */
+  | { id: string; kind: "pdf"; path: string; resume?: boolean };
 export type Progress =
   | { kind: "step"; text: string }
   | { kind: "outline"; outline: Outline }

@@ -74,7 +74,7 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 
 function validJob(j: unknown): boolean {
   if (!isObj(j) || typeof j.id !== "string" || typeof j.path !== "string") return false;
-  if (j.kind === "pdf") return true;
+  if (j.kind === "pdf") return j.resume === undefined || typeof j.resume === "boolean";
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
   if (j.summary !== undefined && typeof j.summary !== "string") return false;

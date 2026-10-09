@@ -13,7 +13,7 @@ import { VaultWriter } from "./vault/writer";
 import type { VaultLike } from "./vault/writer";
 import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
-import { PdfFlow } from "./flows/pdfFlow";
+import { PdfFlow, markResumed } from "./flows/pdfFlow";
 import { decideRename } from "./events";
 import { ProgressHub } from "./ui/hub";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
@@ -310,7 +310,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       }),
     );
 
-    const resumed = [...this.data.jobs];
+    // Restored pdf jobs may be skipped if their content finished before the restart; new triggers never are.
+    const resumed = markResumed(this.data.jobs);
     this.stopFns = [
       () => queue.shutdown(),
       // Before the modals close: a review closed by unload must not count as a cancel (keeps pendingReviews).

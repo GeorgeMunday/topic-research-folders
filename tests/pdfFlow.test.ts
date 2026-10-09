@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { PDFDocument } from "pdf-lib";
-import { PdfFlow, type PdfDeps } from "../src/flows/pdfFlow";
+import { PdfFlow, markResumed, type PdfDeps } from "../src/flows/pdfFlow";
 import { VaultWriter, type VaultLike } from "../src/vault/writer";
 import { ApiError, JobQueue } from "../src/jobs/queue";
 import { sha256 } from "../src/pdf/chunk";
@@ -328,11 +328,11 @@ describe("run", () => {
     expect(c.infos).toEqual(["Extracted 1 notes from a.pdf"]);
   });
 
-  test("already processed hash → silently returns without calling client", async () => {
+  test("restored job with an already processed hash → silently returns without calling client", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1);
     c.processed[await sha256(pdf1)] = { path: "x", date: "d" };
-    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    await c.flow.run({ ...job("Topic/a.pdf"), resume: true } as Job, noSignal, noCp);
     expect(c.extract).not.toHaveBeenCalled();
     expect(c.infos).toEqual([]);
   });
@@ -340,6 +340,11 @@ describe("run", () => {
   test("concurrent runs of identical content process only once", async () => {
     const c = setup();
     c.files.set("Topic/a.pdf", pdf1); c.files.set("Topic/b.pdf", pdf1);
+    // The first run is still analysing while the second starts (processedPdfs does not stop explicit jobs).
+    c.extract.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return { summary: "sum", notes: [note("Anatomy", "N", ["a"], "1")] };
+    });
     await Promise.all([c.flow.run(job("Topic/a.pdf"), noSignal, noCp), c.flow.run(job("Topic/b.pdf"), noSignal, noCp)]);
     expect(c.extract).toHaveBeenCalledTimes(1);
     expect(c.marked.length).toBe(1);
@@ -591,11 +596,11 @@ describe("progress events", () => {
     expect(d.kinds().at(-1)).toEqual({ kind: "failed", error: "bad request" });
   });
 
-  test("already processed pdf emits nothing", async () => {
+  test("restored, already processed pdf emits nothing", async () => {
     const { c, events } = withSink();
     c.files.set("Topic/a.pdf", pdf1);
     c.processed[await sha256(pdf1)] = { path: "x", date: "d" };
-    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    await c.flow.run({ ...job("Topic/a.pdf"), resume: true } as Job, noSignal, noCp);
     expect(events).toEqual([]);
   });
 
@@ -764,5 +769,71 @@ describe("where PDF output goes", () => {
     await c.flow.run(job("Docs/b.pdf"), noSignal, noCp);
     expect(c.errors).toEqual(["Could not analyse b.pdf: it is not inside a researched folder"]);
     expect(planned).toEqual(["Topic/a.pdf", "Docs/b.pdf"]);
+  });
+});
+
+describe("explicit triggers and one-by-one confirmation", () => {
+  test("explicit trigger runs even if the hash is in processedPdfs", async () => {
+    const c = setup();
+    c.processed[await sha256(pdf1)] = { path: "Topic/old.pdf", date: "d" };
+    drop(c, "Topic/paper+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/paper+.pdf");
+    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    await c.flow.run(c.enqueued[0], noSignal, noCp);
+    expect(c.extract).toHaveBeenCalledTimes(1);
+    expect(c.infos).toEqual(["Extracted 1 notes from paper.pdf"]);
+    expect(c.marked).toEqual([await sha256(pdf1)]);
+  });
+
+  test("a restored pdf job (resume: true) whose hash is already processed is skipped", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    c.files.set("Topic/b.pdf", pdf3);
+    c.processed[await sha256(pdf1)] = { path: "Topic/a.pdf", date: "d" };
+    const research: Job = { id: "research:T", kind: "research", path: "T", done: [] };
+    // What main does with data.json jobs before queue.restore.
+    const restored = markResumed([job("Topic/a.pdf"), job("Topic/b.pdf"), research]);
+    expect(restored).toEqual([{ ...job("Topic/a.pdf"), resume: true }, { ...job("Topic/b.pdf"), resume: true }, research]);
+    await c.flow.run(restored[0], noSignal, noCp);
+    expect(c.extract).not.toHaveBeenCalled();
+    expect([...c.infos, ...c.errors]).toEqual([]);
+    // A restored job that never finished still runs.
+    await c.flow.run(restored[1], noSignal, noCp);
+    expect(c.extract).toHaveBeenCalledTimes(1);
+  });
+
+  test("a single pdf over confirmAbovePages asks once; declined enqueues nothing but the file is still renamed back; under the limit never asks", async () => {
+    const c = setup({ confirmAbovePages: 9 });
+    c.confirmAnswer.value = false;
+    drop(c, "Topic/big+.pdf", ten[0]);
+    await c.flow.onFileEvent("Topic/big+.pdf");
+    expect(c.confirms).toHaveLength(1);
+    expect(c.confirms[0]).toContain("big.pdf");
+    expect(c.confirms[0]).toContain("10 pages");
+    expect(c.renames).toEqual([["Topic/big+.pdf", "Topic/big.pdf"]]);
+    expect(c.enqueued).toEqual([]);
+    expect([...c.errors, ...c.infos]).toEqual([]);
+
+    const u = setup({ confirmAbovePages: 10 });
+    drop(u, "Topic/even+.pdf", ten[1]);
+    await u.flow.onFileEvent("Topic/even+.pdf");
+    expect(u.confirms).toEqual([]);
+    expect(u.enqueued).toEqual([job("Topic/even.pdf")]);
+  });
+
+  test("two PDFs triggered back to back are not batched: each is handled on its own (no timer dependency)", async () => {
+    const c = setup({ confirmAbovePages: 5 });
+    const answers = [false, true];
+    (c.flow as any).deps.confirm = { confirm: async (m: string) => { c.confirms.push(m); return answers.shift()!; } };
+    drop(c, "Topic/one+.pdf", ten[0]);
+    drop(c, "Topic/two+.pdf", ten[1]);
+    await c.flow.onFileEvent("Topic/one+.pdf");
+    await c.flow.onFileEvent("Topic/two+.pdf");
+    expect(c.confirms).toHaveLength(2);
+    expect(c.confirms[0]).toContain("one.pdf");
+    expect(c.confirms[1]).toContain("two.pdf");
+    expect(c.confirms.every((m) => m.includes("10 pages") && !m.includes("20"))).toBe(true);
+    expect(c.enqueued).toEqual([job("Topic/two.pdf")]);
+    expect("setTimer" in (c.flow as any).deps).toBe(false);
   });
 });

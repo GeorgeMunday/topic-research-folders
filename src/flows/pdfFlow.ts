@@ -10,6 +10,11 @@ import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
 import { containerFor, pdfTriggerName } from "../pdf/trigger";
 import { uniqueName } from "../names";
 
+/** Marks pdf jobs restored from data.json: only those may be skipped because their content was processed before. */
+export function markResumed(jobs: Job[]): Job[] {
+  return jobs.map((j) => (j.kind === "pdf" ? { ...j, resume: true } : j));
+}
+
 export interface PdfPlan {
   /** Folder that receives the output: the research root, or `<dir>/<stem>` for a PDF outside any root. */
   container: string;
@@ -109,7 +114,7 @@ export class PdfFlow {
   }
 
   private async trigger(path: string, clean: string): Promise<void> {
-    const { readBinary, settings, writer, rename, enqueue } = this.deps;
+    const { readBinary, settings, writer, rename, enqueue, confirm } = this.deps;
     let bytes: ArrayBuffer;
     // Missing (e.g. a late duplicate event after the rename) or unreadable: nothing to do.
     try { bytes = await readBinary(path); } catch { return; }
@@ -122,11 +127,19 @@ export class PdfFlow {
       finalPath = dir ? `${dir}/${stem}${ext}` : `${stem}${ext}`;
       await rename(path, finalPath);
     }
+    let pages: number;
     try {
-      await inspectPdf(bytes);
+      pages = (await inspectPdf(bytes)).pageCount;
     } catch (e) {
       this.failAt(finalPath, `the PDF is ${e instanceof PdfError ? e.reason : "unreadable"}`);
       return;
+    }
+    // Each trigger is confirmed on its own (no batching); declined leaves the file renamed and queues nothing.
+    if (pages > settings().confirmAbovePages) {
+      const msg = `Analyse ${baseName(finalPath)} (${pages} pages)? This sends it to Claude and can use a lot of API credit.`;
+      let ok = false;
+      try { ok = await confirm.confirm(msg); } catch { ok = false; }
+      if (!ok) return;
     }
     enqueue({ id: `pdf:${finalPath}`, kind: "pdf", path: finalPath });
   }
@@ -162,7 +175,9 @@ export class PdfFlow {
     let bytes: ArrayBuffer;
     try { bytes = await readBinary(job.path); } catch { return; }
     const hash = await sha256(bytes);
-    if (processed()[hash] || this.inFlight.has(hash)) return;
+    // An explicit trigger always runs; only a job restored after a restart is skipped when it already finished.
+    const resumed = job.kind === "pdf" && job.resume === true;
+    if ((resumed && processed()[hash]) || this.inFlight.has(hash)) return;
     if (signal.cancelled) return;
     this.inFlight.add(hash);
     let runId: number;

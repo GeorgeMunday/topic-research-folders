@@ -102,6 +102,12 @@ describe("mergeData entry validation", () => {
     const d = mergeData({ jobs: [good, { kind: "pdf", path: "x" }, { id: "1", kind: "pdf" }, { id: "2", kind: "other", path: "p" }, null, 5] });
     expect(d.jobs).toEqual([good]);
   });
+  test("keeps a pdf job's resume flag and drops a pdf job whose resume is not a boolean", () => {
+    const resumed = { id: "pdf:a.pdf", kind: "pdf", path: "a.pdf", resume: true };
+    const fresh = { id: "pdf:b.pdf", kind: "pdf", path: "b.pdf" };
+    const d = mergeData({ jobs: [resumed, fresh, { id: "pdf:c.pdf", kind: "pdf", path: "c.pdf", resume: "yes" }] });
+    expect(d.jobs).toEqual([resumed, fresh]);
+  });
   test("drops malformed processedPdfs entries", () => {
     const d = mergeData({ processedPdfs: { ok: { path: "a", date: "d" }, a: { path: "a" }, b: { date: "d" }, c: null, d: "x" } });
     expect(d.processedPdfs).toEqual({ ok: { path: "a", date: "d" } });
