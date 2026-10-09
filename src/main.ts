@@ -15,7 +15,7 @@ import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
 import { PdfFlow } from "./flows/pdfFlow";
 import { decideRename } from "./events";
-import { SuggestionModal } from "./ui/SuggestionModal";
+import { ResearchProgressModal } from "./ui/ResearchProgressModal";
 import { ConfirmModal } from "./ui/ConfirmModal";
 
 const isPdfPath = (p: string) => /\.pdf$/i.test(p);
@@ -140,7 +140,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     researchFlow = new ResearchFlow({
       client: clientFor,
       writer,
-      approver: { approve: (o) => { const m = new SuggestionModal(this.app); openModals.add(m); return m.approve(o).finally(() => openModals.delete(m)); } },
+      approver: { approve: (o, jobPath) => { const m = new ResearchProgressModal(this.app, o.topic, { onCancel: () => {}, onRetry: () => {} }); openModals.add(m); return m.approve(o, jobPath).finally(() => openModals.delete(m)); } },
       notify,
       rename: async (from, to) => {
         const f = vault.getAbstractFileByPath(from);
