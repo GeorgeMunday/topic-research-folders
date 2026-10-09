@@ -181,7 +181,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         onChange: (r, q) => hub.onQueueChange(r, q),
         onFailed: (job, err) => {
           // The queue gave up, so forget any pending retry; the hub decides the notice (and dedupes it).
-          // A key point's events (and so the hub's failure) are keyed by its folder; the hub derives that path.
+          // A key point's events (and so the hub's failure) are keyed by its entry note path; the hub maps that to the folder spinner.
           if (job.kind === "research") researchFlow.endRun(job.path);
           else if (job.kind === "keypoint") keypointFlow.endRun(job.path);
           else { pdfFlow.dropCache(job.path); pdfFlow.endRun(job.path); }
