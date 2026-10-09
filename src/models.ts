@@ -103,13 +103,17 @@ export function modelOptions(models: ModelInfo[], savedId: string, chosen: boole
     return why.length ? { value: m.id, label: `${label} (${why.join(", ")})`, disabled: true as const } : { value: m.id, label };
   });
   const enabled = usable.filter((m) => missing(m, opts).length === 0);
-  const savedActive = usable.some((m) => m.id === savedId && m.lifecycle === "active");
+  const savedActive = enabled.some((m) => m.id === savedId && m.lifecycle === "active");
   if (savedId === "" || (!chosen && !savedActive)) {
     const firstActive = enabled.find((m) => m.lifecycle === "active");
     const pick = enabled.find((m) => m.id === DEFAULT_MODEL) ?? firstActive ?? enabled[0] ?? usable[0];
     return { options, selected: pick ? pick.id : "" };
   }
-  if (usable.some((m) => m.id === savedId)) return { options, selected: savedId };
+  const saved = usable.find((m) => m.id === savedId);
+  if (saved) {
+    if (missing(saved, opts).length === 0) return { options, selected: savedId };
+    return { options, selected: savedId, warning: `The saved model "${savedId}" can't be used with your settings (${missing(saved, opts).join(", ")}). Pick another model from the list.` };
+  }
   options.push({ value: savedId, label: `${savedId} (unavailable)` });
   return {
     options, selected: savedId,

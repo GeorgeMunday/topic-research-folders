@@ -513,3 +513,19 @@ describe("model capabilities", () => {
     expect(pickerView(state, "a", true, { useWebSearch: false }).options[0].disabled).toBeUndefined();
   });
 });
+
+describe("disabled saved model", () => {
+  test("not chosen: a disabled saved default is replaced by an enabled model", () => {
+    const r = modelOptions([m("claude-sonnet-5-5", { webSearch: false }), m("other", { created_at: "2020-01-01T00:00:00Z" })],
+      "claude-sonnet-5-5", false, { useWebSearch: true });
+    expect(r.selected).toBe("other");
+  });
+  test("chosen: a disabled saved model stays selected with a warning to pick another", () => {
+    const r = modelOptions([m("a", { pdf: false }), m("b")], "a", true, { useWebSearch: false });
+    expect(r.selected).toBe("a");
+    expect(r.warning).toMatch(/pick another model/i);
+  });
+  test("chosen and fully capable: no warning", () => {
+    expect(modelOptions([m("a"), m("b")], "a", true, { useWebSearch: true }).warning).toBeUndefined();
+  });
+});
