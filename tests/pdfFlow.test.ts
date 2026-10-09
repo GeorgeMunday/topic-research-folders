@@ -737,3 +737,32 @@ describe("fix round 1: pdf failure notices carry one prefix", () => {
     expect([...a.errors, ...b.errors, ...c.errors]).toEqual([]);
   });
 });
+
+describe("where PDF output goes", () => {
+  test("plan: a pdf inside a research root -> the root itself (not a new root), with the root's topic info", async () => {
+    const c = setup();
+    expect(await c.flow.plan("Topic/Anatomy/paper.pdf")).toEqual({
+      container: "Topic", asRoot: false, root: { root: "Topic", topic: "Topic", parents: [] },
+    });
+  });
+
+  test("plan: a pdf outside any root -> '<dir>/<stem>' as a new research root; a vault-root pdf -> '<stem>'", async () => {
+    const c = setup();
+    expect(await c.flow.plan("Docs/paper.pdf")).toEqual({ container: "Docs/paper", asRoot: true, root: null });
+    expect(await c.flow.plan("paper.PDF")).toEqual({ container: "paper", asRoot: true, root: null });
+  });
+
+  test("run decides the case through plan(): inside a root the extraction still works; outside a root it reports (until the overview writer lands)", async () => {
+    const c = setup();
+    const planned: string[] = [];
+    const real = c.flow.plan.bind(c.flow);
+    c.flow.plan = async (p: string) => { planned.push(p); return real(p); };
+    drop(c, "Topic/a.pdf", pdf1);
+    await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(c.infos).toEqual(["Extracted 1 notes from a.pdf"]);
+    drop(c, "Docs/b.pdf", pdf3);
+    await c.flow.run(job("Docs/b.pdf"), noSignal, noCp);
+    expect(c.errors).toEqual(["Could not analyse b.pdf: it is not inside a researched folder"]);
+    expect(planned).toEqual(["Topic/a.pdf", "Docs/b.pdf"]);
+  });
+});

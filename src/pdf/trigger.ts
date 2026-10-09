@@ -21,3 +21,16 @@ export function pdfTriggerName(fileName: string, suffix: string): { clean: strin
   }
   return null;
 }
+
+/**
+ * Where a PDF's output goes. Outside any research root the PDF gets its own folder `<dir>/<stem>`
+ * next to it, which becomes a research root (`asRoot`); the name is made collision-safe when it is
+ * created. Inside a root the output goes into that root (the overview under `<root>/Sources`).
+ */
+export function containerFor(pdfPath: string, root: { root: string } | null): { container: string; asRoot: boolean } {
+  if (root) return { container: root.root, asRoot: false };
+  const i = pdfPath.lastIndexOf("/");
+  const dir = i >= 0 ? pdfPath.slice(0, i) : "";
+  const stem = pdfPath.slice(i + 1).replace(/\.pdf$/i, "");
+  return { container: dir ? `${dir}/${stem}` : stem, asRoot: true };
+}

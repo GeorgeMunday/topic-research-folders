@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { pdfTriggerName } from "../src/pdf/trigger";
+import { containerFor, pdfTriggerName } from "../src/pdf/trigger";
 
 describe("pdfTriggerName", () => {
   test("pdfTriggerName table above, plus multi-character suffix and trailing spaces ('paper +.pdf' is a trigger, clean 'paper .pdf' trimmed to 'paper.pdf')", () => {
@@ -32,5 +32,15 @@ describe("pdfTriggerName", () => {
     expect(pdfTriggerName("!!.pdf", "!!")).toBeNull();
     // An empty suffix never triggers.
     expect(pdfTriggerName("paper.pdf", "")).toBeNull();
+  });
+});
+
+describe("containerFor", () => {
+  test("containerFor: pdf outside any root -> '<dir>/<stem>'; inside a root -> the root (overview in <root>/Sources)", () => {
+    expect(containerFor("Docs/paper.pdf", null)).toEqual({ container: "Docs/paper", asRoot: true });
+    expect(containerFor("A/B/My Paper.PDF", null)).toEqual({ container: "A/B/My Paper", asRoot: true });
+    expect(containerFor("paper.pdf", null)).toEqual({ container: "paper", asRoot: true });
+    expect(containerFor("Topic/Anatomy/paper.pdf", { root: "Topic" })).toEqual({ container: "Topic", asRoot: false });
+    expect(containerFor("Science/Topic/paper.pdf", { root: "Science/Topic" })).toEqual({ container: "Science/Topic", asRoot: false });
   });
 });

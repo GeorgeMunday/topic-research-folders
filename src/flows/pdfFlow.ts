@@ -7,8 +7,16 @@ import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
 import { CANCELLED_MESSAGE, nextRunId, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
-import { pdfTriggerName } from "../pdf/trigger";
+import { containerFor, pdfTriggerName } from "../pdf/trigger";
 import { uniqueName } from "../names";
+
+export interface PdfPlan {
+  /** Folder that receives the output: the research root, or `<dir>/<stem>` for a PDF outside any root. */
+  container: string;
+  /** True when the container becomes a new research root (the PDF is not inside one). */
+  asRoot: boolean;
+  root: { root: string; topic: string; parents: string[] } | null;
+}
 
 export interface Confirmer { confirm(message: string): Promise<boolean>; }
 export interface PdfDeps {
@@ -131,6 +139,12 @@ export class PdfFlow {
     } catch { /* ignore */ }
   }
 
+  /** Decides where the output of the PDF at `pdfPath` goes. */
+  async plan(pdfPath: string): Promise<PdfPlan> {
+    const root = await this.deps.writer.findResearchRoot(pdfPath);
+    return { ...containerFor(pdfPath, root), root };
+  }
+
   /** Forget cached chunk results for one job path (or all, with no argument), e.g. when a job is dropped. */
   dropCache(path?: string): void {
     if (path === undefined) { this.chunkCache.clear(); this.cacheHashByPath.clear(); return; }
@@ -173,8 +187,10 @@ export class PdfFlow {
         report("no Claude API key — add it in the plugin settings", "Add your Claude API key in the plugin settings before analysing PDFs.");
         return;
       }
-      const root = await writer.findResearchRoot(job.path);
-      if (!root) { fail("it is not inside a researched folder"); return; }
+      const plan = await this.plan(job.path);
+      const root = plan.root;
+      // A PDF outside any root gets its own folder (plan.container) once the overview writer exists (Task 18).
+      if (plan.asRoot || !root) { report("it is not inside a researched folder"); return; }
       const subfolders = writer.listSubfolders(root.root).filter((n) => !RESERVED.has(n.toLowerCase()));
 
       let split: Awaited<ReturnType<typeof splitPdf>>;
