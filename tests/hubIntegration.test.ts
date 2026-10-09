@@ -97,8 +97,6 @@ function world() {
     settings: () => settings,
     today: () => "2026-10-09",
     enqueue: (j) => queue.add(j),
-    listPdfs: () => [],
-    queuePdfs: async () => {},
     progress: hub.sink,
   };
   flow = new ResearchFlow(deps);

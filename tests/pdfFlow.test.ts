@@ -81,7 +81,7 @@ interface Ctx {
   enqueued: Job[]; infos: string[]; errors: string[]; confirms: string[];
   processed: Record<string, { path: string; date: string }>;
   marked: string[]; order: string[]; timers: Array<() => void>;
-  extract: ReturnType<typeof vi.fn>; settings: Settings; forgotten: string[];
+  extract: ReturnType<typeof vi.fn>; settings: Settings;
   confirmAnswer: { value: boolean | Promise<boolean> };
   readCalls: { active: number; max: number; total: number };
   client: { v: any }; writer: VaultWriter; slow: { ms: number };
@@ -103,7 +103,6 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   const confirms: string[] = [];
   const processed: Record<string, { path: string; date: string }> = {};
   const marked: string[] = [];
-  const forgotten: string[] = [];
   const timers: Array<() => void> = [];
   const settings = { ...baseSettings, ...over };
   const extract = vi.fn(async (..._a: any[]): Promise<PdfExtraction> => ({ summary: "sum", notes: [note("Anatomy", "N", ["a"], "1")] }));
@@ -128,18 +127,30 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
     enqueue: (j) => { enqueued.push(j); return true; },
     processed: () => processed,
     markProcessed: async (h, p) => { order.push("mark"); marked.push(h); processed[h] = { path: p, date: "d" }; },
-    forget: async (h) => { forgotten.push(h); delete processed[h]; },
     setTimer: (fn) => { timers.push(fn); },
   };
   const flow = new PdfFlow(deps);
   if (ready) flow.markReady();
-  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, timers, extract, settings, forgotten, confirmAnswer, readCalls, client, writer, slow };
+  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, timers, extract, settings, confirmAnswer, readCalls, client, writer, slow };
 }
 
 const fire = async (c: Ctx) => { c.timers.at(-1)!(); await c.flow.idle(); };
 const noSignal = { cancelled: false };
 const noCp = async () => {};
 const job = (path: string): Job => ({ id: `pdf:${path}`, kind: "pdf", path });
+
+describe("plain PDFs are never processed", () => {
+  test("a pdf created inside a research root without the suffix is ignored", async () => {
+    const c = setup();
+    c.files.set("Topic/a.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/a.pdf");
+    await c.flow.idle();
+    expect(c.readCalls.total).toBe(0);
+    expect(c.timers.length).toBe(0);
+    expect(c.enqueued).toEqual([]);
+    expect([...c.errors, ...c.infos, ...c.confirms]).toEqual([]);
+  });
+});
 
 describe("events", () => {
   test("ignores pdf events before ready", async () => {
@@ -148,145 +159,6 @@ describe("events", () => {
     await c.flow.onFileEvent("Topic/a.pdf");
     expect(c.timers.length).toBe(0);
     expect(c.readCalls.total).toBe(0);
-  });
-
-  test("ignores pdf outside any research root", async () => {
-    const c = setup();
-    c.files.set("Other/a.pdf", pdf1);
-    await c.flow.onFileEvent("Other/a.pdf");
-    expect(c.timers.length).toBe(0);
-    expect(c.enqueued).toEqual([]);
-  });
-
-  test("ignores non-pdf files, accepts uppercase extension", async () => {
-    const c = setup();
-    c.files.set("Topic/a.txt", pdf1);
-    await c.flow.onFileEvent("Topic/a.txt");
-    expect(c.timers.length).toBe(0);
-    c.files.set("Topic/B.PDF", pdf1);
-    await c.flow.onFileEvent("Topic/B.PDF");
-    await fire(c);
-    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/B.PDF"]);
-  });
-
-  test("batches confirmation for 30 simultaneous drops; declined → nothing enqueued", async () => {
-    const c = setup();
-    c.confirmAnswer.value = false;
-    await Promise.all(ten.map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return c.flow.onFileEvent(`Topic/d${i}.pdf`); }));
-    await fire(c);
-    expect(c.confirms.length).toBe(1);
-    expect(c.confirms[0]).toContain("30 PDFs");
-    expect(c.confirms[0]).toContain("300 pages");
-    expect(c.enqueued).toEqual([]);
-    expect(c.marked).toEqual([]);
-  });
-
-  test("batched drops accepted → 30 jobs enqueued", async () => {
-    const c = setup();
-    await Promise.all(ten.map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return c.flow.onFileEvent(`Topic/d${i}.pdf`); }));
-    await fire(c);
-    expect(c.confirms.length).toBe(1);
-    expect(c.enqueued.length).toBe(30);
-    expect(c.enqueued[0]).toEqual({ id: "pdf:Topic/d0.pdf", kind: "pdf", path: "Topic/d0.pdf" });
-  });
-
-  test("under threshold → enqueued without confirm", async () => {
-    const c = setup();
-    c.files.set("Topic/a.pdf", pdf3);
-    await c.flow.onFileEvent("Topic/a.pdf");
-    await fire(c);
-    expect(c.confirms).toEqual([]);
-    expect(c.enqueued).toEqual([job("Topic/a.pdf")]);
-  });
-
-  test("only the last debounce timer flushes (earlier timers are stale)", async () => {
-    const c = setup();
-    c.files.set("Topic/a.pdf", pdf1); c.files.set("Topic/b.pdf", pdf3);
-    await c.flow.onFileEvent("Topic/a.pdf");
-    await c.flow.onFileEvent("Topic/b.pdf");
-    expect(c.timers.length).toBe(2);
-    c.timers[0](); await c.flow.idle();
-    expect(c.enqueued).toEqual([]);
-    c.timers[1](); await c.flow.idle();
-    expect(c.enqueued.length).toBe(2);
-  });
-
-  test("skips already processed hash with no notice", async () => {
-    const c = setup();
-    c.processed[await sha256(pdf1)] = { path: "old.pdf", date: "d" };
-    c.files.set("Topic/a.pdf", pdf1);
-    await c.flow.onFileEvent("Topic/a.pdf");
-    expect(c.timers.length).toBe(0);
-    expect(c.enqueued).toEqual([]);
-    expect(c.infos).toEqual([]);
-    expect(c.errors).toEqual([]);
-    expect(c.extract).not.toHaveBeenCalled();
-  });
-
-  test("same PDF in two folders in one batch → one job", async () => {
-    const c = setup();
-    c.files.set("Topic/a.pdf", pdf1); c.files.set("Topic/Anatomy/a.pdf", pdf1);
-    await Promise.all([c.flow.onFileEvent("Topic/a.pdf"), c.flow.onFileEvent("Topic/Anatomy/a.pdf")]);
-    await fire(c);
-    expect(c.enqueued.length).toBe(1);
-  });
-
-  test("event-time reads are serialised", async () => {
-    const c = setup();
-    await Promise.all(ten.slice(0, 12).map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return c.flow.onFileEvent(`Topic/d${i}.pdf`); }));
-    expect(c.readCalls.total).toBe(12);
-    expect(c.readCalls.max).toBe(1);
-  });
-
-  test("file vanishing before event read is silently skipped", async () => {
-    const c = setup();
-    await c.flow.onFileEvent("Topic/gone.pdf");
-    expect(c.timers.length).toBe(0);
-    expect(c.errors).toEqual([]);
-  });
-
-  test("encrypted pdf at flush → notice naming file, others still enqueued, no throw", async () => {
-    const c = setup();
-    c.files.set("Topic/secret.pdf", encrypted); c.files.set("Topic/ok.pdf", pdf1);
-    await c.flow.onFileEvent("Topic/secret.pdf");
-    await c.flow.onFileEvent("Topic/ok.pdf");
-    await fire(c);
-    expect(c.errors.length).toBe(1);
-    expect(c.errors[0]).toContain("secret.pdf");
-    expect(c.errors[0]).toContain("encrypted");
-    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/ok.pdf"]);
-  });
-
-  test("events arriving while confirm is awaiting go to the next batch", async () => {
-    const c = setup({ confirmAbovePages: 5 });
-    let resolve!: (v: boolean) => void;
-    c.confirmAnswer.value = new Promise<boolean>((r) => { resolve = r; });
-    c.files.set("Topic/big.pdf", ten[0]); c.files.set("Topic/small.pdf", pdf3);
-    await c.flow.onFileEvent("Topic/big.pdf");
-    c.timers.at(-1)!(); // flush starts, awaiting confirm
-    await new Promise((r) => setTimeout(r, 5));
-    expect(c.confirms.length).toBe(1);
-    await c.flow.onFileEvent("Topic/small.pdf");
-    resolve(true);
-    await c.flow.idle();
-    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/big.pdf"]);
-    await fire(c);
-    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/big.pdf", "Topic/small.pdf"]);
-    expect(c.confirms.length).toBe(1);
-  });
-
-  test("queuePaths force forgets the hash and re-queues", async () => {
-    const c = setup();
-    const h = await sha256(pdf1);
-    c.processed[h] = { path: "old", date: "d" };
-    c.files.set("Topic/a.pdf", pdf1);
-    await c.flow.queuePaths(["Topic/a.pdf"], { force: false });
-    expect(c.timers.length).toBe(0);
-    expect(c.enqueued).toEqual([]);
-    await c.flow.queuePaths(["Topic/a.pdf"], { force: true });
-    await fire(c);
-    expect(c.forgotten).toEqual([h]);
-    expect(c.enqueued).toEqual([job("Topic/a.pdf")]);
   });
 });
 
@@ -450,45 +322,6 @@ describe("run", () => {
 });
 
 describe("fix round 1", () => {
-  test("rename while pending: job follows the newest path and is processed", async () => {
-    const c = setup();
-    c.files.set("Topic/a.pdf", pdf1);
-    await c.flow.onFileEvent("Topic/a.pdf");
-    c.files.delete("Topic/a.pdf");
-    c.files.set("Topic/b.pdf", pdf1);
-    await c.flow.onFileEvent("Topic/b.pdf");
-    await fire(c);
-    expect(c.enqueued).toEqual([job("Topic/b.pdf")]);
-    await c.flow.run(c.enqueued[0], noSignal, noCp);
-    expect(c.marked.length).toBe(1);
-  });
-
-  test("timer firing mid-batch while reads are still queued does not split the confirmation", async () => {
-    const c = setup();
-    c.slow.ms = 2;
-    const all = Promise.all(ten.map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return c.flow.onFileEvent(`Topic/d${i}.pdf`); }));
-    while (c.timers.length < 3) await new Promise((r) => setTimeout(r, 1));
-    expect(c.timers.length).toBeLessThan(30); // later events are still queued
-    c.timers.at(-1)!(); // debounce elapsed while later events are still being read
-    await new Promise((r) => setTimeout(r, 1));
-    expect(c.confirms.length).toBe(0);
-    await all;
-    await fire(c);
-    expect(c.confirms.length).toBe(1);
-    expect(c.confirms[0]).toContain("30 PDFs");
-    expect(c.confirms[0]).toContain("300 pages");
-    expect(c.enqueued.length).toBe(30);
-  });
-
-  test("confirm message does not repeat counts", async () => {
-    const c = setup({ confirmAbovePages: 5 });
-    c.files.set("Topic/a.pdf", ten[0]); c.files.set("Topic/b.pdf", ten[1]);
-    await c.flow.onFileEvent("Topic/a.pdf"); await c.flow.onFileEvent("Topic/b.pdf");
-    await fire(c);
-    expect(c.confirms[0].match(/20 pages/g)!.length).toBe(1);
-    expect(c.confirms[0].match(/2 PDFs/g)!.length).toBe(1);
-  });
-
   test("run stops when cancelled between chunks", async () => {
     const c = setup();
     c.files.set("Topic/big.pdf", pdf120);
@@ -499,39 +332,9 @@ describe("fix round 1", () => {
     expect(c.order).toEqual([]);
     expect(c.marked).toEqual([]);
   });
-
-  test("unexpected errors in event handling are reported, not swallowed", async () => {
-    const c = setup();
-    c.files.set("Topic/a.pdf", pdf1);
-    c.writer.findResearchRoot = async () => { throw new Error("boom"); };
-    await expect(c.flow.onFileEvent("Topic/a.pdf")).resolves.toBeUndefined();
-    expect(c.errors.length).toBe(1);
-    expect(c.errors[0]).toContain("boom");
-  });
 });
 
-describe("queuePaths and chunk cache", () => {
-  test("queuePaths(force:false) runs the full pipeline (batch confirm) even before ready", async () => {
-    const c = setup({}, false);
-    const paths = ten.map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return `Topic/d${i}.pdf`; });
-    await c.flow.queuePaths(paths, { force: false });
-    await fire(c);
-    expect(c.confirms.length).toBe(1);
-    expect(c.confirms[0]).toContain("30 PDFs");
-    expect(c.enqueued.length).toBe(30);
-  });
-
-  test("queuePaths(force:false) skips already-processed hashes and confirm-declined batches enqueue nothing", async () => {
-    const c = setup({ confirmAbovePages: 5 });
-    c.confirmAnswer.value = false;
-    c.processed[await sha256(ten[0])] = { path: "old.pdf", date: "d" };
-    const paths = ten.slice(0, 12).map((b, i) => { c.files.set(`Topic/d${i}.pdf`, b); return `Topic/d${i}.pdf`; });
-    await c.flow.queuePaths(paths, { force: false });
-    await fire(c);
-    expect(c.confirms[0]).toContain("11 PDFs");
-    expect(c.enqueued).toEqual([]);
-  });
-
+describe("chunk cache", () => {
   const chunkSetup = () => {
     const c = setup({ pdfPagesPerChunk: 1 });
     c.files.set("Topic/a.pdf", pdf3);

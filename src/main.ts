@@ -68,19 +68,6 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     };
     const writer = new VaultWriter(vaultLike);
 
-    const listPdfs = (folder: string): string[] => {
-      const root = vault.getAbstractFileByPath(folder);
-      const out: string[] = [];
-      const walk = (f: TFolder) => {
-        for (const c of f.children) {
-          if (c instanceof TFolder) walk(c);
-          else if (c instanceof TFile && c.extension.toLowerCase() === "pdf") out.push(c.path);
-        }
-      };
-      if (root instanceof TFolder) walk(root);
-      return out;
-    };
-
     const openModals = new Set<{ close: () => void }>();
     const timers = new Set<number>();
     let ready = false;
@@ -213,8 +200,6 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       settings,
       today: localDate,
       enqueue: (j) => queue.add(j),
-      listPdfs,
-      queuePdfs: (paths) => pdfFlow.queuePaths(paths, { force: false }),
     });
 
     pdfFlow = new PdfFlow({
@@ -234,11 +219,6 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       processed: () => this.data.processedPdfs,
       markProcessed: async (hash, path) => {
         this.data.processedPdfs[hash] = { path, date: localDate() };
-        await this.persist();
-      },
-      forget: async (hash) => {
-        if (!(hash in this.data.processedPdfs)) return;
-        delete this.data.processedPdfs[hash];
         await this.persist();
       },
       setTimer: (fn, ms) => {
@@ -304,21 +284,6 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         const folder = parentOfActive();
         if (!folder) { new Notice("Open a note inside the folder you want to research."); return; }
         guard(researchFlow.researchFolder(folder, { force: true }));
-      },
-    });
-
-    this.addCommand({
-      id: "analyse-pdfs-in-this-folder",
-      name: "Analyse PDFs in this folder",
-      callback: async () => {
-        if (!needReady()) return;
-        try {
-        const folder = parentOfActive();
-        if (!folder) { new Notice("Open a note inside the researched folder."); return; }
-        const root = await writer.findResearchRoot(`${folder}/x.pdf`);
-        if (!root) { new Notice("This folder is not inside a researched topic."); return; }
-        await pdfFlow.queuePaths(listPdfs(root.root), { force: true });
-        } catch (e) { fail(e); }
       },
     });
 

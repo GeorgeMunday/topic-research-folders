@@ -44,12 +44,12 @@ const baseSettings: Settings = {
   processPdfs: true, pdfPagesPerChunk: 20, confirmAbovePages: 100,
 };
 
-function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggestion[] | null; pdfs?: string[]; keyless?: boolean } = {}) {
+function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggestion[] | null; keyless?: boolean } = {}) {
   const v = new MemVault();
   const writer = new VaultWriter(v);
   // approve: what the user picks when the helper `run` reviews the outline (null = closes the review).
   const calls = { outline: [] as any[], notes: [] as any[], approve: 0, outlinesReturned: 0 };
-  const infos: string[] = [], errors: string[] = [], renames: [string, string][] = [], enqueued: Job[] = [], queuedPdfs: string[][] = [];
+  const infos: string[] = [], errors: string[] = [], renames: [string, string][] = [], enqueued: Job[] = [];
   const failNotes = new Map<string, Error>();
   const settings = { ...baseSettings, ...over.settings };
   const client = {
@@ -77,8 +77,6 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
     settings: () => settings,
     today: () => "2026-10-08",
     enqueue: (j) => { enqueued.push(j); return true; },
-    listPdfs: () => over.pdfs ?? [],
-    queuePdfs: async (paths) => { queuedPdfs.push(paths); },
   };
   const flow = new ResearchFlow(deps);
   // Two-stage run as the hub drives it: the fresh job ends at the outline; the user's pick is then run as a new
@@ -91,7 +89,7 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
     const picked = over.approve === undefined ? [A, B] : over.approve;
     if (picked && picked.length > 0) await flow.run({ ...job, approved: picked, done: [] }, { cancelled: false }, async () => {});
   };
-  return { v, writer, flow, deps, calls, infos, errors, renames, enqueued, queuedPdfs, failNotes, run, settings };
+  return { v, writer, flow, deps, calls, infos, errors, renames, enqueued, failNotes, run, settings };
 }
 
 const rjob = (path: string, extra: Partial<Extract<Job, { kind: "research" }>> = {}): Job =>
@@ -262,30 +260,16 @@ describe("run", () => {
     expect(s.v.files.has("T/T - Overview.md")).toBe(false);
   });
 
-  test("after finishing, hands the PDFs under the root to queuePdfs (not enqueued directly)", async () => {
-    const s = setup({ pdfs: ["Black holes/a.pdf", "Black holes/x/b.pdf"] });
-    s.v.folders.add("Black holes");
-    await s.run(rjob("Black holes"));
-    expect(s.queuedPdfs).toEqual([["Black holes/a.pdf", "Black holes/x/b.pdf"]]);
-    expect(s.enqueued.filter((j) => j.kind === "pdf")).toEqual([]);
-  });
-
-  test("30 existing PDFs -> queuePdfs once with all 30 paths, no direct pdf enqueue", async () => {
-    const pdfs = Array.from({ length: 30 }, (_, i) => `T/d${i}.pdf`);
-    const s = setup({ pdfs });
+  test("research flow finishing does not enqueue or queue any pdf (no listPdfs/queuePdfs in deps)", async () => {
+    const s = setup({ settings: { processPdfs: true } });
+    expect("listPdfs" in s.deps || "queuePdfs" in s.deps).toBe(false);
     s.v.folders.add("T");
+    s.v.files.set("T/a.pdf", "%PDF");
     await s.run(rjob("T"));
-    expect(s.queuedPdfs).toHaveLength(1);
-    expect(s.queuedPdfs[0]).toEqual(pdfs);
+    expect(s.v.files.has("T/T - Overview.md")).toBe(true);
     expect(s.enqueued).toEqual([]);
-  });
-
-  test("no PDFs queued when processPdfs is off", async () => {
-    const s = setup({ pdfs: ["T/a.pdf"], settings: { processPdfs: false } });
-    s.v.folders.add("T");
-    await s.run(rjob("T"));
-    expect(s.queuedPdfs).toEqual([]);
-    expect(s.enqueued).toEqual([]);
+    expect(s.errors).toEqual([]);
+    expect(s.infos.some((m) => m.startsWith("Researched T"))).toBe(true);
   });
 
   test("missing key at run time -> error, nothing written", async () => {
@@ -742,8 +726,8 @@ describe("final-fix: waiting step, pre-cancel, all-failed", () => {
     expect(s.calls.outline).toEqual([]);
     expect(s.kinds()).toEqual([{ kind: "failed", error: CANCELLED_MESSAGE }]);
   });
-  test("all subfolders failing emits failed, writes no overview and queues no PDFs", async () => {
-    const s = withSink({ approve: [A, B], pdfs: ["T/x.pdf"] });
+  test("all subfolders failing emits failed, writes no overview and enqueues nothing", async () => {
+    const s = withSink({ approve: [A, B] });
     s.v.folders.add("T");
     s.failNotes.set("A", new Error("bad"));
     s.failNotes.set("B", new Error("bad"));
@@ -751,7 +735,7 @@ describe("final-fix: waiting step, pre-cancel, all-failed", () => {
     expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: "No subfolders could be written" });
     expect(s.kinds().some((e) => e.kind === "done")).toBe(false);
     expect([...s.v.files.keys()].some((f) => f.includes("Overview"))).toBe(false);
-    expect(s.queuedPdfs).toEqual([]);
+    expect(s.enqueued).toEqual([]);
   });
   test("all failing without a sink notifies an error", async () => {
     const s = setup({ approve: [A] });

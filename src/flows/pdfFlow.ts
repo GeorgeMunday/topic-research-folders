@@ -20,7 +20,6 @@ export interface PdfDeps {
   enqueue: (job: Job) => boolean;
   processed: () => Record<string, { path: string; date: string }>;
   markProcessed: (hash: string, path: string) => Promise<void>;
-  forget: (hash: string) => Promise<void>;
   setTimer: (fn: () => void, ms: number) => void;
   progress?: ProgressSink;
 }
@@ -97,16 +96,9 @@ export class PdfFlow {
     }
   }
 
-  async onFileEvent(path: string): Promise<void> {
-    if (!this.ready || !isPdf(path)) return;
-    return this.serial(() => this.consider(path, false));
-  }
-
-  async queuePaths(paths: string[], opts: { force: boolean }): Promise<void> {
-    for (const p of paths) {
-      if (!isPdf(p)) continue;
-      await this.serial(() => this.consider(p, opts.force));
-    }
+  /** Plain PDFs are never processed: a PDF event alone starts no work (no reads, no API calls). */
+  async onFileEvent(_path: string): Promise<void> {
+    if (!this.ready) return;
   }
 
   /** Forget cached chunk results for one job path (or all, with no argument), e.g. when a job is dropped. */
@@ -128,13 +120,12 @@ export class PdfFlow {
     return p;
   }
 
-  private async consider(path: string, force: boolean): Promise<void> {
-    const { writer, readBinary, forget, processed } = this.deps;
+  private async consider(path: string): Promise<void> {
+    const { writer, readBinary, processed } = this.deps;
     if (!(await writer.findResearchRoot(path))) return;
     let bytes: ArrayBuffer;
     try { bytes = await readBinary(path); } catch { return; }
     const hash = await sha256(bytes);
-    if (force) await forget(hash);
     if (processed()[hash] || this.inFlight.has(hash)) return;
     const dup = this.pendingHashes.get(hash);
     if (dup) { dup.path = path; return; }

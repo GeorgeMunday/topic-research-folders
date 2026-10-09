@@ -17,8 +17,6 @@ export interface ResearchDeps {
   settings: () => Settings;
   today: () => string;
   enqueue: (job: Job) => boolean;
-  listPdfs: (folder: string) => string[];
-  queuePdfs: (paths: string[]) => Promise<void>;
   progress?: ProgressSink;
   /** Schedules fn after ms; returns a function that cancels it. */
   later?: (fn: () => void, ms: number) => () => void;
@@ -204,11 +202,6 @@ export class ResearchFlow {
       .map((a) => results.get(a.name) ?? { subfolder: a.name, noteTitles: [] });
     try {
       await writer.writeOverview(job.path, ov, links, today());
-
-      if (s.processPdfs) {
-        const pdfs = this.deps.listPdfs(job.path);
-        if (pdfs.length > 0) await this.deps.queuePdfs(pdfs);
-      }
     } catch (err) {
       retrying(err);
       if (!isRetryable(err)) finish({ kind: "failed", error: err instanceof Error ? err.message : String(err) });
