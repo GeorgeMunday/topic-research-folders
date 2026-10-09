@@ -137,7 +137,7 @@ export class ResearchFlow {
         emit({ kind: "step", text: "Searching the web…" });
         cancelTimer = later?.(() => emit({ kind: "step", text: "Suggesting folders…" }), OUTLINE_STAGE_MS);
       } else {
-        emit({ kind: "step", text: "Suggesting folders…" });
+        emit({ kind: "step", text: `Researching ${topic}…` });
       }
       try {
         outline = await client.outline(topic, parents, s.maxSubfolders);

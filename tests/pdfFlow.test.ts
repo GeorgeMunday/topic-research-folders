@@ -67,7 +67,7 @@ beforeAll(async () => {
 });
 
 const baseSettings: Settings = {
-  apiKey: "k", model: "m", useWebSearch: false, triggerSuffix: " research", stripSuffix: true,
+  apiKey: "k", model: "m", modelChosen: false, useWebSearch: false, triggerSuffix: " research", stripSuffix: true,
   maxSubfolders: 5, notesPerSubfolder: 3, maxDepth: 3, maxConcurrent: 2, maxRetries: 3,
   processPdfs: true, pdfPagesPerChunk: 50, confirmAbovePages: 200,
 };

@@ -39,7 +39,7 @@ const note = (title: string): NoteContent => ({ title, summary: "s", keyPoints: 
 const ROOT_MARK = "---\nresearch-root: true\n---\n";
 
 const baseSettings: Settings = {
-  apiKey: "key", model: "m", useWebSearch: false, triggerSuffix: "+", stripSuffix: true,
+  apiKey: "key", model: "m", modelChosen: false, useWebSearch: false, triggerSuffix: "+", stripSuffix: true,
   maxSubfolders: 6, notesPerSubfolder: 3, maxDepth: 3, maxConcurrent: 1, maxRetries: 3,
   processPdfs: true, pdfPagesPerChunk: 20, confirmAbovePages: 100,
 };
@@ -444,13 +444,26 @@ describe("progress events", () => {
     expect(t.kinds().filter((e) => e.kind === "step")).toEqual([{ kind: "step", text: "Searching the web…" }]);
   });
 
-  test("web search off: first step is 'Suggesting folders…' and later() is not used", async () => {
+  test("web search off: no emitted step text mentions the web or searching; first step is 'Researching <topic>…'", async () => {
     const s = withSink({ settings: { useWebSearch: false } });
     withLater(s);
     s.v.folders.add("T");
     await s.run(rjob("T"));
-    expect(s.kinds()[0]).toEqual({ kind: "step", text: "Suggesting folders…" });
+    const steps = s.kinds().flatMap((e) => (e.kind === "step" ? [e.text] : []));
+    expect(steps[0]).toBe("Researching T…");
+    expect(steps.some((t) => /web|search(ing)?/i.test(t))).toBe(false);
     expect(s.timers).toEqual([]);
+  });
+
+  test("web search on: steps include 'Searching the web…' (once, before the staged 'Suggesting folders…')", async () => {
+    const s = withSink({ settings: { useWebSearch: true } });
+    withLater(s);
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    s.timers[0].fn();
+    const steps = s.kinds().flatMap((e) => (e.kind === "step" ? [e.text] : []));
+    expect(steps.filter((t) => t === "Searching the web…")).toHaveLength(1);
+    expect(steps.indexOf("Searching the web…")).toBeLessThan(steps.indexOf("Suggesting folders…"));
   });
 
   test("failed outline (non-retryable) emits failed with the message and does not throw or notify", async () => {
