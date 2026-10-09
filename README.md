@@ -12,7 +12,7 @@ Copy these three files into `<your vault>/.obsidian/plugins/topic-research-folde
 
 In the plugin settings, paste your Anthropic API key and pick a model. The key is stored unencrypted in the plugin's `data.json`.
 
-## Trigger 1: a folder ending in `+`
+## Trigger 1: a folder ending in `+` (`Topic+`)
 
 Create a folder such as `Black holes+`. The plugin asks Claude for an outline, shows a small spinner next to the folder in the file explorer, and keeps working in the background, so you can keep typing in other notes. When the suggestions are ready a notice says "Suggestions ready for Black holes" with a **Review** button. Review opens the only dialog in the plugin: tick the subfolders you want and press **Create**. Closing the dialog without Create cancels that job.
 
