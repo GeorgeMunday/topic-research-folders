@@ -72,13 +72,40 @@ test("clear(path) and clear() remove paths and notify subscribers once", () => {
   expect(n).toBe(5);
 });
 
-const ctx = { modalOpen: false, topic: "Black holes" };
-test("noticeFor: null for pdf sources, non-terminal events and an open modal", () => {
-  const pdf = { kind: "pdf" as const, resumed: false };
-  expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, pdf, ctx)).toBeNull();
+const ctx = { topic: "Black holes" };
+test("noticeFor: null for non-terminal research events", () => {
   expect(noticeFor("A", { kind: "step", text: "x" }, src, ctx)).toBeNull();
   expect(noticeFor("A", { kind: "writing", index: 1, total: 2, name: "n" }, src, ctx)).toBeNull();
+  expect(noticeFor("A", { kind: "outline", outline: { topic: "T", summary: "", subfolders: [] } }, src, ctx)).toBeNull();
+});
+test("noticeFor (transitional): an open legacy modal still suppresses the notice until main.ts moves to the hub", () => {
   expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, src, { ...ctx, modalOpen: true })).toBeNull();
+});
+describe("noticeFor: pdf source", () => {
+  const pdf = { kind: "pdf" as const, resumed: false };
+  const pctx = { topic: "paper.pdf" };
+  test("done -> overview ready with the key point count (singular and plural)", () => {
+    expect(noticeFor("T/paper.pdf", { kind: "done", folders: 3, notes: 9 }, pdf, pctx)).toEqual({ text: "Overview ready for paper.pdf — researching 3 key points", error: false });
+    expect(noticeFor("T/paper.pdf", { kind: "done", folders: 1, notes: 2 }, pdf, pctx)).toEqual({ text: "Overview ready for paper.pdf — researching 1 key point", error: false });
+  });
+  test("failed -> error 'Could not analyse'; neutral failures stay neutral", () => {
+    expect(noticeFor("T/paper.pdf", { kind: "failed", error: "boom" }, pdf, pctx)).toEqual({ text: "Could not analyse paper.pdf: boom", error: true });
+    expect(noticeFor("T/paper.pdf", { kind: "failed", error: CANCELLED_MESSAGE }, pdf, pctx)).toEqual({ text: CANCELLED_MESSAGE, error: false });
+  });
+  test("other events -> null", () => {
+    expect(noticeFor("T/paper.pdf", { kind: "step", text: "x" }, pdf, pctx)).toBeNull();
+    expect(noticeFor("T/paper.pdf", { kind: "itemDone", name: "x", ok: false, error: "bad" }, pdf, pctx)).toBeNull();
+  });
+});
+describe("noticeFor: keypoint source", () => {
+  const kp = { kind: "keypoint" as const, resumed: false };
+  const kctx = { topic: "Key A" };
+  test("failed -> error; neutral -> neutral; done and others -> null", () => {
+    expect(noticeFor("T/Key A", { kind: "failed", error: "boom" }, kp, kctx)).toEqual({ text: 'Could not research "Key A": boom', error: true });
+    expect(noticeFor("T/Key A", { kind: "failed", error: CANCELLED_MESSAGE }, kp, kctx)).toEqual({ text: CANCELLED_MESSAGE, error: false });
+    expect(noticeFor("T/Key A", { kind: "done", folders: 1, notes: 3 }, kp, kctx)).toBeNull();
+    expect(noticeFor("T/Key A", { kind: "step", text: "x" }, kp, kctx)).toBeNull();
+  });
 });
 test("noticeFor: done with singular and plural", () => {
   expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, src, ctx)).toEqual({ text: "Researched Black holes: 1 folder, 1 note", error: false });

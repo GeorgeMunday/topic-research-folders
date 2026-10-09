@@ -1,6 +1,6 @@
 import type { Progress } from "./types";
 
-export interface ProgressSource { kind: "research" | "pdf"; resumed: boolean; runId?: number; }
+export interface ProgressSource { kind: "research" | "pdf" | "keypoint"; resumed: boolean; runId?: number; }
 export type ProgressSink = (path: string, e: Progress, src: ProgressSource) => void;
 export const CANCELLED_MESSAGE = "Cancelled";
 export const ALREADY_RESEARCHED_MESSAGE = "Already researched — use 'Research this folder' to run it again";
@@ -76,13 +76,32 @@ export class ProgressTracker {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+
+/**
+ * The notice (if any) a progress event should produce.
+ * `modalOpen` is transitional: only the legacy main.ts wiring passes it (removed when main.ts moves to the hub).
+ */
 export function noticeFor(
-  _path: string,
+  path: string,
   e: Progress,
   src: ProgressSource,
-  ctx: { modalOpen: boolean; topic: string },
+  ctx: { topic: string; modalOpen?: boolean },
 ): { text: string; error: boolean } | null {
-  if (src.kind !== "research" || ctx.modalOpen) return null;
+  if (ctx.modalOpen) return null;
+  if (src.kind === "pdf") {
+    if (e.kind === "done") return { text: `Overview ready for ${baseName(path)} — researching ${plural(e.folders, "key point")}`, error: false };
+    if (e.kind === "failed") {
+      if (isNeutralMessage(e.error)) return { text: e.error, error: false };
+      return { text: `Could not analyse ${baseName(path)}: ${e.error}`, error: true };
+    }
+    return null;
+  }
+  if (src.kind === "keypoint") {
+    if (e.kind !== "failed") return null;
+    if (isNeutralMessage(e.error)) return { text: e.error, error: false };
+    return { text: `Could not research "${baseName(path)}": ${e.error}`, error: true };
+  }
   if (e.kind === "done") return { text: `Researched ${ctx.topic}: ${plural(e.folders, "folder")}, ${plural(e.notes, "note")}`, error: false };
   if (e.kind === "failed") {
     if (isNeutralMessage(e.error)) return { text: e.error, error: false };
