@@ -4,6 +4,7 @@ import type { Job, Outline, PendingReview } from "./types";
 import { modelOptions, pickerView } from "./models";
 import type { ModelCache, ModelCatalog, ModelInfo } from "./models";
 import { isSubject } from "./subjects";
+import type { RunRecord } from "./undo";
 
 export interface Settings {
   apiKey: string;
@@ -33,6 +34,10 @@ export interface PluginData {
   modelCache: ModelCache | null;
   /** Folder suggestions waiting for review; the outline job has finished. */
   pendingReviews: PendingReview[];
+  /** What the last 20 research runs created (Undo). */
+  runLog: RunRecord[];
+  /** Trigger-suffix renames waiting for the run that starts at the new path. */
+  renames: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -96,12 +101,14 @@ function validJob(j: unknown): boolean {
       && typeof pt.detail === "string" && typeof pt.pages === "string"
       && (pt.subfolder === undefined || typeof pt.subfolder === "string")
       && (j.docSummary === undefined || typeof j.docSummary === "string")
+      && (j.run === undefined || typeof j.run === "string")
       && validSubject(j);
   }
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
   if (j.summary !== undefined && typeof j.summary !== "string") return false;
   if (j.resolvedTopic !== undefined && typeof j.resolvedTopic !== "string") return false;
+  if (j.run !== undefined && typeof j.run !== "string") return false;
   if (!validSubject(j)) return false;
   if (j.approved === undefined) return true;
   return Array.isArray(j.approved) && j.approved.every((a) => isObj(a) && typeof a.name === "string");
@@ -123,6 +130,22 @@ function validPending(p: unknown): PendingReview | null {
     if (o.subject === "coding" && typeof o.codeLanguage === "string") outline.codeLanguage = o.codeLanguage;
   }
   return { path: p.path, outline };
+}
+
+function validRun(r: unknown): RunRecord | null {
+  if (!isObj(r) || typeof r.key !== "string" || typeof r.label !== "string" || typeof r.root !== "string") return null;
+  if (typeof r.at !== "number" || !Number.isFinite(r.at)) return null;
+  if (!Array.isArray(r.folders) || !r.folders.every((x) => typeof x === "string")) return null;
+  if (!Array.isArray(r.files) || !r.files.every((f) => isObj(f) && typeof f.path === "string" && typeof f.at === "number" && Number.isFinite(f.at))) return null;
+  const out: RunRecord = { key: r.key, at: r.at, label: r.label, root: r.root, folders: [...(r.folders as string[])], files: (r.files as { path: string; at: number }[]).map((f) => ({ path: f.path, at: f.at })) };
+  if (isObj(r.rename) && typeof r.rename.from === "string" && typeof r.rename.to === "string") out.rename = { from: r.rename.from, to: r.rename.to };
+  return out;
+}
+
+function validRenames(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (isObj(raw)) for (const [k, v] of Object.entries(raw)) if (typeof v === "string") out[k] = v;
+  return out;
 }
 
 function validProcessed(raw: unknown): PluginData["processedPdfs"] {
@@ -180,6 +203,8 @@ export function mergeData(raw: unknown): PluginData {
     jobs: Array.isArray(src.jobs) ? (src.jobs.filter(validJob) as Job[]) : [],
     processedPdfs: validProcessed(src.processedPdfs),
     modelCache: validModelCache(src.modelCache),
+    runLog: Array.isArray(src.runLog) ? src.runLog.flatMap((r) => { const v = validRun(r); return v ? [v] : []; }).slice(-20) : [],
+    renames: validRenames(src.renames),
     pendingReviews: Array.isArray(src.pendingReviews) ? src.pendingReviews.flatMap((p) => { const v = validPending(p); return v ? [v] : []; }) : [],
   };
 }

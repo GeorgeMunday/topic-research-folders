@@ -9,6 +9,7 @@ import { isTriggerName, strippedPath } from "../trigger";
 import { uniqueName } from "../names";
 import { contextToPrompt } from "../context";
 import { resolveSubject } from "../subjects";
+import type { RunLog } from "../undo";
 
 export interface Notifier { info(msg: string): void; error(msg: string): void; }
 export interface ResearchDeps {
@@ -22,6 +23,8 @@ export interface ResearchDeps {
   progress?: ProgressSink;
   /** Schedules fn after ms; returns a function that cancels it. */
   later?: (fn: () => void, ms: number) => () => void;
+  /** What each run creates, for Undo. */
+  log?: RunLog;
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -67,6 +70,8 @@ export class ResearchFlow {
       const siblings = new Set(this.deps.writer.listSubfolders(parent).map((n) => n.toLowerCase()));
       const name = uniqueName(baseName(stripped), (c) => siblings.has(c.toLowerCase()));
       finalPath = parent ? `${parent}/${name}` : name;
+      // Remembered by the final path: the run that starts there can put the folder back for Undo.
+      this.deps.log?.noteRename(path, finalPath);
       await this.deps.rename(path, finalPath);
     }
     await this.researchFolder(finalPath);
@@ -185,6 +190,7 @@ export class ResearchFlow {
 
     // The folder name read within its parents (e.g. "Introduction to C#" for `c#/intro`); it names the notes' topic.
     const resolved = job.resolvedTopic?.trim() || topic;
+    const rec = this.deps.log?.begin(job.run ?? `research:${job.path}`, topic, job.path);
     const done = [...job.done];
     // Titles are known only for subfolders written in this run; resumed (already done) ones link with no note titles.
     const results = new Map<string, { subfolder: string; noteTitles: string[]; folder?: string }>();
@@ -197,7 +203,7 @@ export class ResearchFlow {
       emit({ kind: "writing", index: i + 1, total: approved.length, name: sub.name });
       try {
         const { notes, quiz } = await client.notes(resolved, parents, sub, s.notesPerSubfolder, { context: folderContext, subject, codeLanguage });
-        const res = await writer.writeSubfolder(job.path, resolved,{ subfolder: sub.name, notes, quiz }, today());
+        const res = await writer.writeSubfolder(job.path, resolved,{ subfolder: sub.name, notes, quiz }, today(), rec);
         results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
         written++;
         notesWritten += res.noteTitles.length;
@@ -228,7 +234,7 @@ export class ResearchFlow {
       .filter((a) => results.has(a.name) || done.includes(a.name))
       .map((a) => results.get(a.name) ?? { subfolder: a.name, noteTitles: [] });
     try {
-      await writer.writeOverview(job.path, ov, links, today(), topic);
+      await writer.writeOverview(job.path, ov, links, today(), topic, rec);
     } catch (err) {
       retrying(err);
       if (!isRetryable(err)) finish({ kind: "failed", error: err instanceof Error ? err.message : String(err) });

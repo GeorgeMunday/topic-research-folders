@@ -12,6 +12,7 @@ import { uniqueName } from "../names";
 import { contextToPrompt } from "../context";
 import { resolveSubject } from "../subjects";
 import { ParseError } from "../research/parse";
+import type { RunLog } from "../undo";
 
 /** Marks pdf jobs restored from data.json: only those may be skipped because their content was processed before. */
 export function markResumed(jobs: Job[]): Job[] {
@@ -43,6 +44,8 @@ export interface PdfDeps {
   /** Renames a vault file (used to strip the trigger suffix). */
   rename: (from: string, to: string) => Promise<void>;
   progress?: ProgressSink;
+  /** What each run creates, for Undo. */
+  log?: RunLog;
 }
 
 const MAX_CHUNK_BYTES = 20_000_000;
@@ -304,9 +307,12 @@ export class PdfFlow {
         if (!same) jobSubject = { subject: r.subject, ...(r.codeLanguage ? { codeLanguage: r.codeLanguage } : {}) };
       }
       let written: Awaited<ReturnType<typeof writer.writePdfOverview>>;
+      // The key point jobs append to this run, so Undo takes the whole PDF back at once.
+      const runKey = `pdf:${job.path}:${job.kind === "pdf" ? job.triggeredAt ?? 0 : 0}`;
       try {
         written = await writer.writePdfOverview({
           container: plan.container, asRoot: plan.asRoot, pdfName: file, stem, overview, existingSubfolders: subfolders, date: today(),
+          rec: this.deps.log?.begin(runKey, file, plan.container),
         });
       } catch (e) {
         // Not retried even when the error looks temporary: the writes are not idempotent (a retry would make
@@ -322,7 +328,7 @@ export class PdfFlow {
       for (const entry of written.entries) {
         const ok = enqueue({
           id: `keypoint:${entry.entryPath}`, kind: "keypoint", path: entry.entryPath, folder: entry.folder,
-          pdfName: file, topic: stem, parents: [...parents], docSummary: overview.summary, point: entry.point, ...jobSubject,
+          pdfName: file, topic: stem, parents: [...parents], docSummary: overview.summary, point: entry.point, ...(this.deps.log ? { run: runKey } : {}), ...jobSubject,
         });
         if (!ok) allQueued = false;
       }

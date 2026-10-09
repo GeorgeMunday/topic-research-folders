@@ -7,6 +7,7 @@ import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
 import { contextToPrompt } from "../context";
 import { resolveSubject } from "../subjects";
+import type { RunLog } from "../undo";
 import { CANCELLED_MESSAGE, nextRunId, type ProgressSink, type ProgressSource } from "../progress";
 
 export interface KeypointDeps {
@@ -16,6 +17,8 @@ export interface KeypointDeps {
   settings: () => Settings;
   today: () => string;
   progress?: ProgressSink;
+  /** What each run creates, for Undo. */
+  log?: RunLog;
 }
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
@@ -75,7 +78,7 @@ export class KeypointFlow {
         { context: contextToPrompt(fc), subject, codeLanguage },
       );
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
-      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today(), quiz, { pdf: job.pdfName, pages: point.pages });
+      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today(), quiz, { pdf: job.pdfName, pages: point.pages }, this.deps.log?.begin(job.run ?? `pdf:${job.pdfName}`, job.pdfName, job.folder.slice(0, Math.max(0, job.folder.lastIndexOf("/")))));
       emit({ kind: "done", folders: 1, notes: res.noteTitles.length });
     } catch (err) {
       if (isRetryable(err)) {

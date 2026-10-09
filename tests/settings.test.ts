@@ -40,7 +40,7 @@ describe("settings", () => {
 
   test("null / junk raw data yields defaults", () => {
     for (const raw of [null, undefined, 5, "x", []]) {
-      expect(mergeData(raw)).toEqual({ settings: DEFAULT_SETTINGS, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [] });
+      expect(mergeData(raw)).toEqual({ settings: DEFAULT_SETTINGS, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [], runLog: [], renames: {} });
     }
   });
 

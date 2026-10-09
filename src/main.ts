@@ -24,6 +24,8 @@ import { SuggestionModal } from "./ui/SuggestionModal";
 import { ConfirmModal } from "./ui/ConfirmModal";
 import { ICON_ID, ICON_SVG_INNER } from "./icon";
 import { ribbonItems } from "./ui/ribbon";
+import { RunLog, confirmText, executeUndo, planUndo } from "./undo";
+import type { RunRecord, UndoView } from "./undo";
 import type { MenuItem } from "./ui/ribbon";
 
 const ERROR_NOTICE_MS = 10000;
@@ -35,7 +37,7 @@ function localDate(): string {
 }
 
 export default class TopicResearchFoldersPlugin extends Plugin {
-  private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [] };
+  private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [], runLog: [], renames: {} };
   private saveChain: Promise<void> = Promise.resolve();
   private statusEl: HTMLElement | null = null;
   private statusTextEl: HTMLElement | null = null;
@@ -71,6 +73,12 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       },
     };
     const writer = new VaultWriter(vaultLike);
+    // What each run creates (the last 20), so "Undo last research" removes exactly that.
+    const runLog = new RunLog(this.data.runLog, (runs, renames) => {
+      this.data.runLog = runs;
+      this.data.renames = renames;
+      this.persist().catch(() => {});
+    }, Date.now, this.data.renames);
 
     const openModals = new Set<{ close: () => void }>();
     let ready = false;
@@ -144,7 +152,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       {
         startApproved: (path, approved, outline) =>
           queue.add({
-            id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary,
+            id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary, run: `research:${path}:${Date.now()}`,
             ...(outline.resolvedTopic ? { resolvedTopic: outline.resolvedTopic } : {}),
             ...(outline.subject ? { subject: outline.subject } : {}), ...(outline.codeLanguage ? { codeLanguage: outline.codeLanguage } : {}),
           }),
@@ -208,6 +216,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       writer,
       progress: hub.sink,
       later: (fn, ms) => { const id = window.setTimeout(fn, ms); return () => window.clearTimeout(id); },
+      log: runLog,
       notify,
       rename: async (from, to) => {
         const f = vault.getAbstractFileByPath(from);
@@ -223,6 +232,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       writer,
       notify,
       progress: hub.sink,
+      log: runLog,
       confirm: { confirm: (msg) => { const m = new ConfirmModal(this.app); openModals.add(m); return m.confirm(msg).finally(() => openModals.delete(m)); } },
       readBinary: async (p) => {
         const f = vault.getAbstractFileByPath(p);
@@ -249,6 +259,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       writer,
       notify,
       progress: hub.sink,
+      log: runLog,
       settings,
       today: localDate,
     });
@@ -309,6 +320,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     // A pending review follows its folder when it is renamed and goes away (quietly) when it is deleted.
     this.registerEvent(vault.on("delete", (f) => { if (f instanceof TFolder) hub.dropPending(f.path); }));
     this.registerEvent(vault.on("rename", (f, oldPath) => {
+      runLog.renamePath(oldPath, f.path);
       if (f instanceof TFolder) hub.renamePending(oldPath, f.path);
       const d = decideRename({ isFolder: f instanceof TFolder, oldPath, newPath: f.path, suffix: settings().triggerSuffix });
       if (d.action === "folder-event") guard(researchFlow.onFolderEvent(d.path));
@@ -341,6 +353,42 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       },
     });
 
+    // Undo: move what a run created to the system trash, keeping anything the user edited or added to.
+    const undoView: UndoView = {
+      mtime: (p) => { const f = vault.getAbstractFileByPath(p); return f instanceof TFile ? f.stat.mtime : null; },
+      children: (p) => { const f = vault.getAbstractFileByPath(p); return f instanceof TFolder ? f.children.map((c) => c.name) : null; },
+    };
+    const undoRun = async (run: RunRecord | undefined): Promise<void> => {
+      if (!run) { new Notice("Nothing to undo."); return; }
+      const plan = planUndo(run, undoView);
+      if (plan.trash.length === 0 && !plan.renameBack) {
+        runLog.remove(run.key);
+        new Notice(`Nothing left to undo for ${run.label}.`);
+        return;
+      }
+      const m = new ConfirmModal(this.app);
+      openModals.add(m);
+      const ok = await m.confirm(confirmText(plan, run), { title: `Undo research on ${run.label}?`, ok: "Move to trash" }).finally(() => openModals.delete(m));
+      if (!ok) return;
+      // The rename back would look like a new trigger folder: tell the writer it is our own.
+      if (plan.renameBack) writer.expectCreate(plan.renameBack.newPath);
+      const res = await executeUndo(plan, {
+        trash: async (p) => { const f = vault.getAbstractFileByPath(p); if (f) await vault.trash(f, true); },
+        rename: async (from, to) => { const f = vault.getAbstractFileByPath(from); if (f) await this.app.fileManager.renameFile(f, to); },
+      });
+      if (res.failed.length === 0) runLog.remove(run.key);
+      const kept = plan.kept.length > 0 ? `, kept ${plan.kept.length} you edited or added to` : "";
+      new Notice(res.failed.length > 0
+        ? `Undo: moved ${res.trashed} to the trash, but could not remove ${res.failed.length}.`
+        : `Undo: moved ${res.trashed} item${res.trashed === 1 ? "" : "s"} to the trash${kept}.`);
+    };
+
+    this.addCommand({
+      id: "undo-last-research",
+      name: "Undo last research",
+      callback: () => { if (needReady()) guard(undoRun(runLog.last())); },
+    });
+
     this.addCommand({
       id: "cancel-all-research-jobs",
       name: "Cancel all research jobs",
@@ -356,6 +404,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         // Review / Retry for the file or folder's current state.
         for (const it of hub.menuFor(file.path)) menu.addItem((item) => item.setTitle(it.label).setIcon("sparkles").onClick(() => { try { it.run(); } catch (e) { fail(e); } }));
         if (!(file instanceof TFolder) || file.path === "/" || file.isRoot()) return;
+        const last = runLog.lastFor(file.path);
+        if (last) menu.addItem((item) => item.setTitle("Undo this research").setIcon("undo-2").onClick(() => { if (needReady()) guard(undoRun(last)); }));
         menu.addItem((item) =>
           item.setTitle("Research this folder").setIcon("search").onClick(() => { if (needReady()) guard(researchFlow.researchFolder(file.path, { force: true })); }));
       }),

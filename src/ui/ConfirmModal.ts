@@ -5,15 +5,19 @@ import type { Confirmer } from "../flows/pdfFlow";
 export class ConfirmModal extends Modal implements Confirmer {
   private resolve: ((v: boolean) => void) | null = null;
   private message = "";
+  private title = "Analyse this PDF?";
+  private okLabel = "Continue";
 
   constructor(app: App) {
     super(app);
   }
 
-  confirm(message: string): Promise<boolean> {
+  confirm(message: string, opts?: { title?: string; ok?: string }): Promise<boolean> {
     return new Promise((resolve) => {
       this.resolve = resolve;
       this.message = message;
+      if (opts?.title) this.title = opts.title;
+      if (opts?.ok) this.okLabel = opts.ok;
       this.open();
     });
   }
@@ -27,10 +31,10 @@ export class ConfirmModal extends Modal implements Confirmer {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    this.titleEl.setText("Analyse this PDF?");
+    this.titleEl.setText(this.title);
     contentEl.createEl("p", { text: this.message });
     const buttons = contentEl.createDiv({ cls: "modal-button-container" });
-    buttons.createEl("button", { text: "Continue", cls: "mod-cta" }).addEventListener("click", () => {
+    buttons.createEl("button", { text: this.okLabel, cls: "mod-cta" }).addEventListener("click", () => {
       this.settle(true);
       this.close();
     });

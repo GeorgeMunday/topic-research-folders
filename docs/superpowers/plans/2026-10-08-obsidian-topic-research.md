@@ -1587,7 +1587,7 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 - [x] Tests: citation parsing, dedupe, cap 5, omission, PDF note source line. **Commit** `feat: list real sources at the end of each note`.
 
 ### Task 28: Undo last research (section 5)
-- [ ] Tests: only logged items removed, edited files kept, non-empty folders kept, suffix rename undone only if empty, log capped at 20. **Commit** `feat: undo last research`.
+- [x] Tests: only logged items removed, edited files kept, non-empty folders kept, suffix rename undone only if empty, log capped at 20. **Commit** `feat: undo last research`.
 
 ### Task 29: README (section 6)
 - [ ] Test: README mentions each feature and no longer the review Notice or loading modal. **Commit** `docs: README for the new features`.

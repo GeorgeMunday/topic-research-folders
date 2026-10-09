@@ -18,14 +18,14 @@ export interface KeyPoint { name: string; text: string; detail: string; pages: s
 export interface PdfOverview { summary: string; plainWords: string; keyPoints: KeyPoint[]; subject?: Subject; codeLanguage?: string; }
 /** `summary` carries the reviewed outline's summary into the overview written by the approved job. */
 export type Job =
-  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string; resolvedTopic?: string; subject?: Subject; codeLanguage?: string }
+  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string; resolvedTopic?: string; subject?: Subject; codeLanguage?: string; run?: string }
   /**
    * `triggeredAt`: ms epoch when the trigger queued it. `resume`: restored from data.json after a restart
    * (skipped only when its content finished processing at or after `triggeredAt`).
    */
   | { id: string; kind: "pdf"; path: string; resume?: boolean; triggeredAt?: number }
   /** Stage 2: research one key point. `path` is its entry note (unique); the notes go into `folder`. */
-  | { id: string; kind: "keypoint"; path: string; folder: string; pdfName: string; topic: string; parents: string[]; point: KeyPoint; docSummary?: string; subject?: Subject; codeLanguage?: string };
+  | { id: string; kind: "keypoint"; path: string; folder: string; pdfName: string; topic: string; parents: string[]; point: KeyPoint; docSummary?: string; subject?: Subject; codeLanguage?: string; run?: string };
 export type Progress =
   | { kind: "step"; text: string }
   | { kind: "outline"; outline: Outline }
