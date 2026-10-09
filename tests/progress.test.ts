@@ -78,9 +78,6 @@ test("noticeFor: null for non-terminal research events", () => {
   expect(noticeFor("A", { kind: "writing", index: 1, total: 2, name: "n" }, src, ctx)).toBeNull();
   expect(noticeFor("A", { kind: "outline", outline: { topic: "T", summary: "", subfolders: [] } }, src, ctx)).toBeNull();
 });
-test("noticeFor (transitional): an open legacy modal still suppresses the notice until main.ts moves to the hub", () => {
-  expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, src, { ...ctx, modalOpen: true })).toBeNull();
-});
 describe("noticeFor: pdf source", () => {
   const pdf = { kind: "pdf" as const, resumed: false };
   const pctx = { topic: "paper.pdf" };

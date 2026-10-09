@@ -80,15 +80,13 @@ const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /**
  * The notice (if any) a progress event should produce.
- * `modalOpen` is transitional: only the legacy main.ts wiring passes it (removed when main.ts moves to the hub).
  */
 export function noticeFor(
   path: string,
   e: Progress,
   src: ProgressSource,
-  ctx: { topic: string; modalOpen?: boolean },
+  ctx: { topic: string },
 ): { text: string; error: boolean } | null {
-  if (ctx.modalOpen) return null;
   if (src.kind === "pdf") {
     if (e.kind === "done") return { text: `Overview ready for ${baseName(path)} — researching ${plural(e.folders, "key point")}`, error: false };
     if (e.kind === "failed") {

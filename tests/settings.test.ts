@@ -40,7 +40,7 @@ describe("settings", () => {
 
   test("null / junk raw data yields defaults", () => {
     for (const raw of [null, undefined, 5, "x", []]) {
-      expect(mergeData(raw)).toEqual({ settings: DEFAULT_SETTINGS, jobs: [], processedPdfs: {}, modelCache: null });
+      expect(mergeData(raw)).toEqual({ settings: DEFAULT_SETTINGS, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [] });
     }
   });
 
@@ -131,4 +131,39 @@ describe("mergeData modelCache", () => {
     ] };
     expect(mergeData({ modelCache: cache }).modelCache?.models.map((x) => x.id)).toEqual(["a", "dep"]);
   });
+});
+
+describe("mergeData pendingReviews", () => {
+  const outline = { topic: "Black holes", summary: "s", subfolders: [{ name: "Anatomy", why: "a" }, { name: "Formation", why: "b" }] };
+  test("defaults to an empty list", () => {
+    expect(mergeData({}).pendingReviews).toEqual([]);
+    expect(mergeData(null).pendingReviews).toEqual([]);
+    expect(mergeData({ pendingReviews: "x" }).pendingReviews).toEqual([]);
+  });
+  test("valid entries survive mergeData", () => {
+    const list = [{ path: "Topics/Black holes", outline }, { path: "Stars", outline: { ...outline, topic: "Stars", subfolders: [] } }];
+    expect(mergeData({ pendingReviews: list }).pendingReviews).toEqual(list);
+  });
+  test("invalid entries are dropped one by one", () => {
+    const good = { path: "T", outline };
+    const bad = [
+      null, 5, "x",
+      { outline },
+      { path: 5, outline },
+      { path: "T" },
+      { path: "T", outline: null },
+      { path: "T", outline: { ...outline, topic: 1 } },
+      { path: "T", outline: { ...outline, summary: undefined } },
+      { path: "T", outline: { ...outline, subfolders: "nope" } },
+      { path: "T", outline: { ...outline, subfolders: [{ name: "A" }] } },
+      { path: "T", outline: { ...outline, subfolders: [{ name: 1, why: "w" }] } },
+      { path: "T", outline: { ...outline, subfolders: [null] } },
+    ];
+    expect(mergeData({ pendingReviews: [bad[0], good, ...bad.slice(1)] }).pendingReviews).toEqual([good]);
+  });
+});
+
+test("research jobs keep a string summary; a wrong-typed summary drops the job", () => {
+  const base = { id: "r", kind: "research", path: "T", done: [], approved: [{ name: "A", why: "w" }] };
+  expect(mergeData({ jobs: [{ ...base, summary: "s" }, { ...base, summary: 5 }] }).jobs).toEqual([{ ...base, summary: "s" }]);
 });

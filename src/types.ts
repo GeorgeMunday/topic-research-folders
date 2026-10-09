@@ -4,8 +4,9 @@ export interface NoteContent { title: string; summary: string; keyPoints: string
 export interface SubfolderNotes { subfolder: string; notes: NoteContent[]; }
 export interface ExtractedNote extends NoteContent { subfolder: string; isNew: boolean; pages: string; }
 export interface PdfExtraction { summary: string; notes: ExtractedNote[]; }
+/** `summary` carries the reviewed outline's summary into the overview written by the approved job. */
 export type Job =
-  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean }
+  | { id: string; kind: "research"; path: string; approved?: SubfolderSuggestion[]; done: string[]; force?: boolean; summary?: string }
   | { id: string; kind: "pdf"; path: string };
 export type Progress =
   | { kind: "step"; text: string }
@@ -14,3 +15,5 @@ export type Progress =
   | { kind: "itemDone"; name: string; ok: boolean; error?: string }
   | { kind: "done"; folders: number; notes: number }
   | { kind: "failed"; error: string };
+/** Folder suggestions waiting for the user's review (persisted in data.json). */
+export interface PendingReview { path: string; outline: Outline; }

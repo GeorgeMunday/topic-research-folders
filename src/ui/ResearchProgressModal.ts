@@ -1,13 +1,12 @@
 import { Modal } from "obsidian";
 import type { App } from "obsidian";
 import type { Outline, Progress, SubfolderSuggestion } from "../types";
-import type { Approver } from "../flows/researchFlow";
 import { selectApproved, type SuggestionRow } from "./selection";
 import { initialState, reduce, progressFraction, summaryText, writingText, itemText, type ModalState } from "./progressModel";
 
 export interface ProgressModalHooks { onCancel: () => void; onRetry: () => void; onClosed?: () => void; }
 
-export class ResearchProgressModal extends Modal implements Approver {
+export class ResearchProgressModal extends Modal {
   private state: ModalState;
   private isOpen = false;
   private resolve: ((v: SubfolderSuggestion[] | null) => void) | null = null;

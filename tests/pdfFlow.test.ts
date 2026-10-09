@@ -635,7 +635,7 @@ describe("progress events", () => {
       { kind: "done", folders: 1, notes: 3 },
     ]);
     expect(events.every((e) => e[0] === "Topic/a.pdf" && e[2].kind === "pdf" && e[2].resumed === false)).toBe(true);
-    expect(c.infos).toEqual(["Extracted 3 notes from a.pdf"]);
+    expect(c.infos).toEqual([]); // with a sink the hub shows the notice
   });
 
   test("encrypted pdf emits failed after the preparing step; cancelled pdf emits failed CANCELLED_MESSAGE", async () => {
@@ -646,7 +646,7 @@ describe("progress events", () => {
       { kind: "step", text: "Preparing secret.pdf…" },
       { kind: "failed", error: "Could not analyse secret.pdf: the PDF is encrypted." },
     ]);
-    expect(e1.c.errors).toHaveLength(1);
+    expect(e1.c.errors).toEqual([]); // with a sink the hub shows the notice
 
     const e2 = withSink();
     e2.c.settings.pdfPagesPerChunk = 1;
@@ -758,5 +758,51 @@ describe("pdf pre-cancel", () => {
     await c.flow.run(job("Topic/a.pdf"), { cancelled: true }, noCp);
     expect(c.extract).not.toHaveBeenCalled();
     expect(events).toEqual([]);
+  });
+});
+
+describe("Task 16: outcomes go only through the sink when one exists", () => {
+  function withSink() {
+    const c = setup();
+    const events: Progress[] = [];
+    (c.flow as any).deps.progress = (_p: string, e: Progress) => { events.push(e); };
+    return { c, events };
+  }
+
+  test("with a sink, no notify call is made for failed exits or success; without a sink notify is used as before", async () => {
+    // missing key
+    const a = withSink(); a.c.files.set("Topic/a.pdf", pdf1); a.c.client.v = null;
+    await a.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(a.events.at(-1)).toMatchObject({ kind: "failed" });
+    expect([...a.c.errors, ...a.c.infos]).toEqual([]);
+    // encrypted
+    const b = withSink(); b.c.files.set("Topic/s.pdf", encrypted);
+    await b.c.flow.run(job("Topic/s.pdf"), noSignal, noCp);
+    expect(b.events.at(-1)).toEqual({ kind: "failed", error: "Could not analyse s.pdf: the PDF is encrypted." });
+    expect([...b.c.errors, ...b.c.infos]).toEqual([]);
+    // non-retryable chunk error
+    const d = withSink(); d.c.files.set("Topic/a.pdf", pdf1); d.c.extract.mockRejectedValue(new ApiError("bad request", 400));
+    await d.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(d.events.at(-1)).toEqual({ kind: "failed", error: "Could not analyse a.pdf: bad request" });
+    expect([...d.c.errors, ...d.c.infos]).toEqual([]);
+    // success
+    const e = withSink(); e.c.files.set("Topic/a.pdf", pdf1);
+    await e.c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(e.events.at(-1)).toMatchObject({ kind: "done" });
+    expect([...e.c.errors, ...e.c.infos]).toEqual([]);
+
+    // without a sink: unchanged
+    const na = setup(); na.files.set("Topic/a.pdf", pdf1); na.client.v = null;
+    await na.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(na.errors).toEqual(["Add your Claude API key in the plugin settings before analysing PDFs."]);
+    const nb = setup(); nb.files.set("Topic/s.pdf", encrypted);
+    await nb.flow.run(job("Topic/s.pdf"), noSignal, noCp);
+    expect(nb.errors).toEqual(["Could not analyse s.pdf: the PDF is encrypted."]);
+    const nd = setup(); nd.files.set("Topic/a.pdf", pdf1); nd.extract.mockRejectedValue(new ApiError("bad request", 400));
+    await nd.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(nd.errors).toEqual(["Could not analyse a.pdf: bad request"]);
+    const ne = setup(); ne.files.set("Topic/a.pdf", pdf1);
+    await ne.flow.run(job("Topic/a.pdf"), noSignal, noCp);
+    expect(ne.infos).toEqual(["Extracted 1 notes from a.pdf"]);
   });
 });

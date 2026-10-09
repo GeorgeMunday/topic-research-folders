@@ -47,13 +47,15 @@ const baseSettings: Settings = {
 function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggestion[] | null; pdfs?: string[]; keyless?: boolean } = {}) {
   const v = new MemVault();
   const writer = new VaultWriter(v);
-  const calls = { outline: [] as any[], notes: [] as any[], approve: 0, approvePaths: [] as string[] };
+  // approve: what the user picks when the helper `run` reviews the outline (null = closes the review).
+  const calls = { outline: [] as any[], notes: [] as any[], approve: 0, outlinesReturned: 0 };
   const infos: string[] = [], errors: string[] = [], renames: [string, string][] = [], enqueued: Job[] = [], queuedPdfs: string[][] = [];
   const failNotes = new Map<string, Error>();
   const settings = { ...baseSettings, ...over.settings };
   const client = {
     async outline(topic: string, parents: string[], max: number): Promise<Outline> {
       calls.outline.push([topic, parents, max]);
+      calls.outlinesReturned++;
       return { topic, summary: "sum", subfolders: [A, B, C] };
     },
     async notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number) {
@@ -67,7 +69,6 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
   const deps: ResearchDeps = {
     client: () => (over.keyless ? null : client),
     writer,
-    approver: { async approve(o, jobPath) { calls.approve++; calls.approvePaths.push(jobPath); return over.approve === undefined ? o.subfolders.slice(0, 2) : over.approve; } },
     notify: { info: (m) => infos.push(m), error: (m) => errors.push(m) },
     rename: async (from, to) => {
       renames.push([from, to]);
@@ -80,7 +81,16 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
     queuePdfs: async (paths) => { queuedPdfs.push(paths); },
   };
   const flow = new ResearchFlow(deps);
-  const run = (job: Job) => flow.run(job, { cancelled: false }, async () => {});
+  // Two-stage run as the hub drives it: the fresh job ends at the outline; the user's pick is then run as a new
+  // job with `approved` (default pick: the first two suggestions; `approve: null` means the review was closed).
+  const run = async (job: Job) => {
+    const before = calls.outlinesReturned;
+    await flow.run(job, { cancelled: false }, async () => {});
+    if (job.kind !== "research" || job.approved || calls.outlinesReturned === before) return;
+    calls.approve++;
+    const picked = over.approve === undefined ? [A, B] : over.approve;
+    if (picked && picked.length > 0) await flow.run({ ...job, approved: picked, done: [] }, { cancelled: false }, async () => {});
+  };
   return { v, writer, flow, deps, calls, infos, errors, renames, enqueued, queuedPdfs, failNotes, run, settings };
 }
 
@@ -189,7 +199,7 @@ describe("run", () => {
     expect(s.infos.some((m) => m.includes("Black holes"))).toBe(true);
   });
 
-  test("cancelled approval writes nothing", async () => {
+  test("a closed review (no approved job follows the outline) writes nothing", async () => {
     const s = setup({ approve: null });
     s.v.folders.add("Black holes");
     await s.run(rjob("Black holes"));
@@ -208,13 +218,14 @@ describe("run", () => {
     expect(s.calls.notes[0].slice(0, 2)).toEqual(["Anatomy", ["Black holes"]]);
   });
 
-  test("checkpoints approved + done; resumed job skips approval and done subfolders", async () => {
-    const s = setup({ approve: [A, B, C] });
+  test("checkpoints done per subfolder of an approved job; resumed job skips the outline and done subfolders", async () => {
+    const s = setup();
     s.v.folders.add("T");
     const cps: Job[] = [];
-    await s.flow.run(rjob("T"), { cancelled: false }, async (j) => { cps.push(JSON.parse(JSON.stringify(j))); });
-    expect(cps[0]).toMatchObject({ approved: [A, B, C], done: [] });
-    expect(cps.map((j) => (j as any).done)).toEqual([[], ["A"], ["A", "B"], ["A", "B", "C"]]);
+    await s.flow.run(rjob("T", { approved: [A, B, C] }), { cancelled: false }, async (j) => { cps.push(JSON.parse(JSON.stringify(j))); });
+    expect(cps.every((j) => JSON.stringify((j as any).approved) === JSON.stringify([A, B, C]))).toBe(true);
+    expect(cps.map((j) => (j as any).done)).toEqual([["A"], ["A", "B"], ["A", "B", "C"]]);
+    expect(s.calls.outline).toEqual([]);
 
     const r = setup();
     r.v.folders.add("T");
@@ -237,7 +248,7 @@ describe("run", () => {
   });
 
   test("stops at next subfolder when cancelled", async () => {
-    const s = setup({ approve: [A, B, C] });
+    const s = setup();
     s.v.folders.add("T");
     const signal = { cancelled: false };
     const orig = s.deps.writer.writeSubfolder.bind(s.deps.writer);
@@ -246,7 +257,7 @@ describe("run", () => {
       signal.cancelled = true;
       return r;
     };
-    await s.flow.run(rjob("T"), signal, async () => {});
+    await s.flow.run(rjob("T", { approved: [A, B, C] }), signal, async () => {});
     expect(s.calls.notes.map((c) => c[2])).toEqual(["A"]);
     expect(s.v.files.has("T/T - Overview.md")).toBe(false);
   });
@@ -391,8 +402,8 @@ describe("run", () => {
     expect(s.enqueued).toHaveLength(1);
   });
 
-  test("real queue: retryable failure resumes from checkpoint without re-approving or rewriting", async () => {
-    const s = setup({ approve: [A, B] });
+  test("real queue: retryable failure of an approved job resumes from checkpoint without a new outline or rewriting", async () => {
+    const s = setup();
     s.v.folders.add("T");
     let bCalls = 0;
     const origGet = s.failNotes.get.bind(s.failNotes);
@@ -403,10 +414,10 @@ describe("run", () => {
       persist: async () => {}, sleep: async () => {}, rand: () => 0.5,
       onChange: () => {}, onFailed: () => { failed++; },
     });
-    q.add(rjob("T"));
+    q.add(rjob("T", { approved: [A, B] }));
     await q.idle();
     expect(failed).toBe(0);
-    expect(s.calls.approve).toBe(1);
+    expect(s.calls.outline).toEqual([]);
     expect(s.calls.notes.filter((c) => c[2] === "A")).toHaveLength(1);
     expect(s.calls.notes.filter((c) => c[2] === "B")).toHaveLength(2);
     expect(s.v.files.has("T/A/A note.md")).toBe(true);
@@ -429,7 +440,7 @@ describe("progress events", () => {
     s.deps.later = (fn, ms) => { const cancel = vi.fn(); s.timers.push({ fn, ms, cancel }); return cancel; };
   };
 
-  test("successful run emits step, step, outline, writing/itemDone per subfolder, then done with folder and note counts", async () => {
+  test("successful two-stage run: steps and outline (outline job), then writing/itemDone per subfolder and done with folder and note counts (approved job)", async () => {
     const s = withSink({ settings: { useWebSearch: true }, approve: [A, C] });
     withLater(s);
     s.v.folders.add("T");
@@ -443,7 +454,10 @@ describe("progress events", () => {
       { kind: "writing", index: 2, total: 2, name: "C" }, { kind: "itemDone", name: "C", ok: true },
       { kind: "done", folders: 2, notes: 2 },
     ]);
-    expect(s.events.every((e) => e[0] === "T" && e[2].kind === "research" && e[2].resumed === false)).toBe(true);
+    const at = s.events.findIndex((e) => e[1].kind === "outline");
+    expect(s.events.every((e) => e[0] === "T" && e[2].kind === "research")).toBe(true);
+    expect(s.events.slice(0, at + 1).every((e) => e[2].resumed === false)).toBe(true);
+    expect(s.events.slice(at + 1).every((e) => e[2].resumed === true)).toBe(true);
     expect(s.infos).toEqual([]);
     expect(s.errors).toEqual([]);
   });
@@ -473,7 +487,7 @@ describe("progress events", () => {
     t.v.folders.add("T");
     await t.run(rjob("T"));
     expect(t.timers[0].cancel).toHaveBeenCalledTimes(1);
-    expect(t.kinds().filter((e) => e.kind === "step")).toEqual([{ kind: "step", text: "Searching the web…" }]);
+    expect(t.events.filter((e) => !e[2].resumed && e[1].kind === "step").map((e) => e[1])).toEqual([{ kind: "step", text: "Searching the web…" }]);
   });
 
   test("web search off: no emitted step text mentions the web or searching; first step is 'Researching <topic>…'", async () => {
@@ -531,15 +545,7 @@ describe("progress events", () => {
     expect(k.at(-1)).toEqual({ kind: "done", folders: 2, notes: 2 });
   });
 
-  test("approval cancelled emits failed CANCELLED_MESSAGE", async () => {
-    const s = withSink({ approve: null });
-    s.v.folders.add("T");
-    await s.run(rjob("T"));
-    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
-    expect(s.calls.notes).toEqual([]);
-  });
-
-  test("cancel after the outline returns (user pressed Cancel) writes nothing and emits failed CANCELLED_MESSAGE", async () => {
+  test("cancel after the outline returns writes nothing and emits failed CANCELLED_MESSAGE", async () => {
     const s = withSink();
     s.v.folders.add("T");
     const sig = { cancelled: false };
@@ -550,36 +556,27 @@ describe("progress events", () => {
     expect(s.calls.notes).toEqual([]);
     expect(s.v.files.size).toBe(0);
     expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
-
-    // and cancelled while the approver was open
-    const t = withSink();
-    t.v.folders.add("T");
-    const sig2 = { cancelled: false };
-    t.deps.approver = { async approve(o) { sig2.cancelled = true; return o.subfolders; } };
-    await t.flow.run(rjob("T"), sig2, async () => {});
-    expect(t.calls.notes).toEqual([]);
-    expect(t.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
   });
 
   test("cancel mid-way stops at the next subfolder and emits failed CANCELLED_MESSAGE", async () => {
-    const s = withSink({ approve: [A, B, C] });
+    const s = withSink();
     s.v.folders.add("T");
     const signal = { cancelled: false };
     const orig = s.deps.writer.writeSubfolder.bind(s.deps.writer);
     s.deps.writer.writeSubfolder = async (...a: Parameters<typeof orig>) => { const r = await orig(...a); signal.cancelled = true; return r; };
-    await s.flow.run(rjob("T"), signal, async () => {});
+    await s.flow.run(rjob("T", { approved: [A, B, C] }), signal, async () => {});
     expect(s.calls.notes.map((c) => c[2])).toEqual(["A"]);
     expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
     expect(s.kinds().filter((e) => e.kind === "failed" || e.kind === "done")).toHaveLength(1);
   });
 
   test("cancel before the overview emits failed CANCELLED_MESSAGE", async () => {
-    const s = withSink({ approve: [A] });
+    const s = withSink();
     s.v.folders.add("T");
     const signal = { cancelled: false };
     const orig = s.deps.writer.writeSubfolder.bind(s.deps.writer);
     s.deps.writer.writeSubfolder = async (...a: Parameters<typeof orig>) => { const r = await orig(...a); signal.cancelled = true; return r; };
-    await s.flow.run(rjob("T"), signal, async () => {});
+    await s.flow.run(rjob("T", { approved: [A] }), signal, async () => {});
     expect(s.v.files.has("T/T - Overview.md")).toBe(false);
     expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
   });
@@ -621,13 +618,6 @@ describe("progress events", () => {
     expect(c.errors).toEqual([]);
   });
 
-  test("approver receives the job path as its second argument", async () => {
-    const s = setup();
-    s.v.folders.add("Black holes");
-    await s.run(rjob("Black holes"));
-    expect(s.calls.approvePaths).toEqual(["Black holes"]);
-  });
-
   test("without a sink the flow still notifies as before", async () => {
     const s = setup({ approve: [A] });
     s.v.folders.add("T");
@@ -653,21 +643,24 @@ describe("run identity", () => {
     s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
     return { ...s, events, ids: () => [...new Set(events.map((x) => x[2].runId))] };
   }
-  test("all events of one successful run share one runId", async () => {
+  test("all events of one run share one runId; the outline run and the approved run have different ids", async () => {
     const s = withSink();
     s.v.folders.add("T");
     await s.run(rjob("T"));
     expect(s.events.length).toBeGreaterThan(3);
-    expect(s.ids()).toHaveLength(1);
-    expect(typeof s.ids()[0]).toBe("number");
+    const outlineIds = new Set(s.events.filter((e) => !e[2].resumed).map((e) => e[2].runId));
+    const approvedIds = new Set(s.events.filter((e) => e[2].resumed).map((e) => e[2].runId));
+    expect(outlineIds.size).toBe(1);
+    expect(approvedIds.size).toBe(1);
+    expect(typeof [...outlineIds][0]).toBe("number");
+    expect([...outlineIds][0]).not.toBe([...approvedIds][0]);
   });
   test("two successive runs for the same path carry different runIds", async () => {
     const s = withSink();
     s.v.folders.add("T");
-    await s.run(rjob("T"));
+    await s.flow.run(rjob("T"), { cancelled: false }, async () => {});
     const first = s.ids()[0];
-    s.v.files.clear();
-    await s.run(rjob("T"));
+    await s.flow.run(rjob("T"), { cancelled: false }, async () => {});
     expect(s.ids()).toHaveLength(2);
     expect(s.events.at(-1)![2].runId).not.toBe(first);
   });
@@ -678,7 +671,7 @@ describe("run identity", () => {
     let fail = true;
     s.deps.client = () => ({ ...orig, outline: async (...a: [string, string[], number]) => { if (fail) { fail = false; throw new ApiError("overloaded", 503); } return orig.outline(...a); } });
     await expect(s.run(rjob("T"))).rejects.toBeInstanceOf(ApiError);
-    await s.run(rjob("T"));
+    await s.flow.run(rjob("T"), { cancelled: false }, async () => {});
     expect(s.ids()).toHaveLength(1);
   });
   test("a pre-start reject carries a runId different from the previous run's", async () => {
@@ -768,4 +761,81 @@ describe("final-fix: waiting step, pre-cancel, all-failed", () => {
     expect(s.errors).toContain("No subfolders could be written");
     expect(s.infos).toEqual([]);
   });
+});
+
+describe("Task 16: suggestions are reviewed on demand", () => {
+  type Ev = [string, Progress, ProgressSource];
+  function withHubSink(over: Parameters<typeof setup>[0] = {}) {
+    const s = setup(over);
+    const events: Ev[] = [];
+    s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
+    return { ...s, events, kinds: () => events.map((x) => x[1]) };
+  }
+
+  test("outline job emits step(s) then outline and finishes without writing or awaiting the user", async () => {
+    const s = withHubSink();
+    s.v.folders.add("T");
+    const cps: Job[] = [];
+    await s.flow.run(rjob("T"), { cancelled: false }, async (j) => { cps.push(j); });
+    expect(s.kinds()).toEqual([
+      { kind: "step", text: "Researching T…" },
+      { kind: "outline", outline: { topic: "T", summary: "sum", subfolders: [A, B, C] } },
+    ]);
+    expect(s.calls.notes).toEqual([]);
+    expect(s.v.files.size).toBe(0);
+    expect(s.v.folders.size).toBe(1);
+    expect(cps).toEqual([]);
+    expect(s.infos).toEqual([]);
+    expect(s.errors).toEqual([]);
+  });
+
+  test("outline job frees its queue slot: with a real JobQueue maxConcurrent 1 and a second queued job, the second runs while the first outline is awaiting review", async () => {
+    const s = withHubSink();
+    s.v.folders.add("T");
+    s.v.folders.add("U");
+    const failures: unknown[] = [];
+    const q = new JobQueue(s.flow.run, {
+      maxConcurrent: () => 1, maxRetries: () => 0,
+      persist: async () => {}, sleep: async () => {}, rand: () => 0.5,
+      onChange: () => {}, onFailed: (_j, e) => { failures.push(e); },
+    });
+    q.add(rjob("T"));
+    q.add(rjob("U", { approved: [A] }));
+    await Promise.race([q.idle(), new Promise((r) => setTimeout(r, 500))]);
+    expect(failures).toEqual([]);
+    expect(s.events.some(([p, e]) => p === "T" && e.kind === "outline")).toBe(true);
+    expect(s.events.some(([p, e]) => p === "T" && (e.kind === "done" || e.kind === "failed"))).toBe(false);
+    expect(s.v.files.has("U/A/A note.md")).toBe(true);
+    expect(s.events.at(-1)!.slice(0, 2)).toMatchObject(["U", { kind: "done" }]);
+  });
+
+  test("cancel right after the outline returns -> failed Cancelled, no outline event", async () => {
+    const s = withHubSink();
+    s.v.folders.add("T");
+    const sig = { cancelled: false };
+    const orig = s.deps.client()!;
+    s.deps.client = () => ({ ...orig, outline: async (...a: Parameters<typeof orig.outline>) => { const r = await orig.outline(...a); sig.cancelled = true; return r; } });
+    await s.flow.run(rjob("T"), sig, async () => {});
+    expect(s.kinds().some((e) => e.kind === "outline")).toBe(false);
+    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: CANCELLED_MESSAGE });
+    expect(s.v.files.size).toBe(0);
+  });
+
+  test("no sink: the outline job returns quietly", async () => {
+    const s = setup();
+    s.v.folders.add("T");
+    await expect(s.flow.run(rjob("T"), { cancelled: false }, async () => {})).resolves.toBeUndefined();
+    expect(s.calls.outline).toHaveLength(1);
+    expect(s.calls.notes).toEqual([]);
+    expect(s.v.files.size).toBe(0);
+    expect(s.infos).toEqual([]);
+    expect(s.errors).toEqual([]);
+  });
+});
+
+test("the approved job writes the reviewed outline's summary (job.summary) into the overview", async () => {
+  const s = setup();
+  s.v.folders.add("T");
+  await s.flow.run(rjob("T", { approved: [A], summary: "Why this topic matters" }), { cancelled: false }, async () => {});
+  expect(s.v.files.get("T/T - Overview.md")).toContain("> Why this topic matters");
 });

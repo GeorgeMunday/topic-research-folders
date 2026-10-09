@@ -15,13 +15,14 @@ import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
 import { PdfFlow } from "./flows/pdfFlow";
 import { decideRename } from "./events";
-import { ProgressTracker, RunGate, nextRunId, noticeFor, shouldOpenSession, CANCELLED_MESSAGE } from "./progress";
-import type { ProgressSink } from "./progress";
+import { ProgressHub } from "./ui/hub";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
-import { ResearchProgressModal } from "./ui/ResearchProgressModal";
+import { SuggestionModal } from "./ui/SuggestionModal";
 import { ConfirmModal } from "./ui/ConfirmModal";
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+const ERROR_NOTICE_MS = 10000;
+// Long enough to reach the Review button.
+const ACTION_NOTICE_MS = 20000;
 const isPdfPath = (p: string) => /\.pdf$/i.test(p);
 
 function localDate(): string {
@@ -31,7 +32,7 @@ function localDate(): string {
 }
 
 export default class TopicResearchFoldersPlugin extends Plugin {
-  private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {}, modelCache: null };
+  private data: PluginData = { settings: { ...DEFAULT_SETTINGS }, jobs: [], processedPdfs: {}, modelCache: null, pendingReviews: [] };
   private saveChain: Promise<void> = Promise.resolve();
   private statusEl: HTMLElement | null = null;
   private stopFns: Array<() => void> = [];
@@ -83,7 +84,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     const openModals = new Set<{ close: () => void }>();
     const timers = new Set<number>();
     let ready = false;
-    const fail = (e: unknown) => { new Notice(`Research problem: ${e instanceof Error ? e.message : "unexpected error"}`, 10000); };
+    const fail = (e: unknown) => { new Notice(`Research problem: ${e instanceof Error ? e.message : "unexpected error"}`, ERROR_NOTICE_MS); };
     const guard = (p: Promise<unknown>) => { p.catch(fail); };
     const needReady = (): boolean => {
       if (ready) return true;
@@ -93,7 +94,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
 
     const notify: Notifier = {
       info: (m) => { new Notice(m); },
-      error: (m) => { new Notice(m, 10000); },
+      error: (m) => { new Notice(m, ERROR_NOTICE_MS); },
     };
 
     const clientFor = () => {
@@ -110,66 +111,63 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     let researchFlow: ResearchFlow;
     // eslint-disable-next-line prefer-const
     let pdfFlow: PdfFlow;
+    // eslint-disable-next-line prefer-const
+    let queue: JobQueue;
 
-    const tracker = new ProgressTracker();
     const spinner = new ExplorerSpinner(document);
-    const statusRQ = { r: 0, q: 0 };
-    const updateStatus = () => {
-      if (!this.statusEl) return;
-      const suffix = tracker.statusSuffix();
-      const hidden = statusRQ.r + statusRQ.q === 0 && suffix === "";
-      this.statusEl.setText(hidden ? "" : `Research: ${statusRQ.r}/${statusRQ.q}${suffix ? ` · ${suffix}` : ""}`);
-      this.statusEl.style.display = hidden ? "none" : "";
-    };
-    tracker.onChange(() => { updateStatus(); spinner.set(tracker.active()); });
 
-    const gate = new RunGate();
-    // Jobs restored from data.json: they stay silent at startup (no modal from their first step).
-    const restoredPaths = new Set<string>();
-    let unloaded = false;
-    const sessions = new Map<string, ResearchProgressModal>();
-    const noticed = new Set<string>();
-    const dropSession = (path: string, s: ResearchProgressModal) => {
-      if (sessions.get(path) === s) sessions.delete(path);
-      openModals.delete(s);
-    };
-    const createSession = (path: string): ResearchProgressModal => {
-      const session: ResearchProgressModal = new ResearchProgressModal(this.app, baseName(path), {
-        onCancel: () => { queue.cancelJob("research", path); gate.cancel(path); researchFlow.endRun(path); tracker.clear(path); dropSession(path, session); },
-        onRetry: () => { dropSession(path, session); guard(researchFlow.researchFolder(path)); },
-        onClosed: () => { if (session.isDone()) dropSession(path, session); },
-      });
-      sessions.set(path, session);
-      openModals.add(session);
-      return session;
+    const showNotice = (text: string, opts?: { error?: boolean; action?: { label: string; run: () => void } }) => {
+      if (opts?.action) {
+        const action = opts.action;
+        const frag = document.createDocumentFragment();
+        const label = document.createElement("span");
+        label.textContent = `${text} `;
+        frag.appendChild(label);
+        const button = document.createElement("button");
+        button.textContent = action.label;
+        frag.appendChild(button);
+        const n = new Notice(frag, ACTION_NOTICE_MS);
+        button.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          n.hide();
+          try { action.run(); } catch (e) { fail(e); }
+        });
+        return;
+      }
+      if (opts?.error) new Notice(text, ERROR_NOTICE_MS);
+      else new Notice(text);
     };
 
-    const sink: ProgressSink = (path, e, src) => {
-      if (unloaded || !gate.accept(path, e, src)) return;
-      tracker.handle(path, e, src);
-      if (src.kind !== "research") return;
-      let session = sessions.get(path);
-      if (e.kind === "step" && !src.resumed) {
-        if (session?.isDone()) { const old = session; dropSession(path, old); old.forceClose(); session = undefined; }
-        if (shouldOpenSession({ resumed: src.resumed, restored: restoredPaths.has(path), hasSession: !!session })) { session = createSession(path); session.open(); }
-      }
-      session?.handle(e);
-      const note = noticeFor(path, e, src, { modalOpen: session?.isVisible() ?? false, topic: baseName(path) });
-      if (note) {
-        const run = src.runId ?? path;
-        const key = e.kind === "itemDone" ? `${run}|item|${e.name}` : `${run}|end`;
-        if (!noticed.has(key)) {
-          noticed.add(key);
-          if (note.error) notify.error(note.text); else notify.info(note.text);
-        }
-      }
-      if (e.kind === "done" || e.kind === "failed") {
-        restoredPaths.delete(path);
-        if (session && !session.isVisible()) dropSession(path, session);
-      }
-    };
+    // The single place that turns flow and queue events into notices, status text and spinners.
+    const hub = new ProgressHub(
+      {
+        notice: showNotice,
+        setStatus: (text) => {
+          if (!this.statusEl) return;
+          this.statusEl.setText(text);
+          this.statusEl.style.display = text === "" ? "none" : "";
+        },
+        setSpinners: (paths) => spinner.set(paths),
+        reviewModal: (outline) => {
+          const m = new SuggestionModal(this.app, outline);
+          openModals.add(m);
+          return m.choose().finally(() => openModals.delete(m));
+        },
+      },
+      {
+        startApproved: (path, approved, outline) => {
+          queue.add({ id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary });
+        },
+        cancelJob: (kind, path) => queue.cancelJob(kind, path),
+        retry: (path) => guard(researchFlow.researchFolder(path)),
+        persistPending: (list) => {
+          this.data.pendingReviews = list;
+          guard(this.persist());
+        },
+      },
+    );
 
-    const queue = new JobQueue(
+    queue = new JobQueue(
       async (job, signal, checkpoint) => {
         if (job.kind === "research") return researchFlow.run(job, signal, checkpoint);
         if (!settings().processPdfs) return;
@@ -184,21 +182,12 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         },
         sleep: (ms) => new Promise<void>((res) => window.setTimeout(res, ms)),
         rand: Math.random,
-        onChange: (r, q) => {
-          statusRQ.r = r;
-          statusRQ.q = q;
-          // After a loading-state Cancel the status bar can stay at 1/0 until the in-flight HTTP call returns.
-          if (r + q === 0) tracker.clear();
-          updateStatus();
-        },
+        onChange: (r, q) => hub.onQueueChange(r, q),
         onFailed: (job, err) => {
           pdfFlow.dropCache(job.path);
-          const msg = err instanceof Error ? err.message : "unexpected error";
-          // Reuse the run id the flow used so a failed it already sent is deduplicated; the queue gave up, so forget any pending retry.
-          const runId = (gate.live(job.path) ? gate.currentRun(job.path) : undefined) ?? nextRunId();
+          // The queue gave up, so forget any pending retry; the hub decides the notice (and dedupes it).
           if (job.kind === "research") researchFlow.endRun(job.path); else pdfFlow.endRun(job.path);
-          sink(job.path, { kind: "failed", error: msg }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved, runId });
-          if (job.kind === "pdf") notify.error(`Research job failed (${job.kind}: ${job.path}): ${msg}`);
+          hub.onQueueFailed(job, err);
         },
         onPersistError: (e) => {
           console.error("Topic Research Folders: could not persist jobs", e instanceof Error ? e.message : "unknown error");
@@ -209,8 +198,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     researchFlow = new ResearchFlow({
       client: clientFor,
       writer,
-      approver: { approve: (o, jobPath) => (sessions.get(jobPath) ?? createSession(jobPath)).approve(o, jobPath) },
-      progress: sink,
+      progress: hub.sink,
       later: (fn, ms) => { const id = window.setTimeout(fn, ms); return () => window.clearTimeout(id); },
       notify,
       rename: async (from, to) => {
@@ -228,7 +216,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       client: clientFor,
       writer,
       notify,
-      progress: sink,
+      progress: hub.sink,
       confirm: { confirm: (msg) => { const m = new ConfirmModal(this.app); openModals.add(m); return m.confirm(msg).finally(() => openModals.delete(m)); } },
       readBinary: async (p) => {
         const f = vault.getAbstractFileByPath(p);
@@ -317,18 +305,25 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "review-pending-suggestions",
+      name: "Review pending suggestions",
+      callback: () => {
+        if (!needReady()) return;
+        guard(hub.review());
+      },
+    });
+
+    this.addCommand({
       id: "cancel-all-research-jobs",
       name: "Cancel all research jobs",
       callback: () => {
         if (!needReady()) return;
         queue.cancelAll();
         pdfFlow.dropCache();
-        for (const path of new Set([...tracker.active(), ...sessions.keys()])) gate.cancel(path);
-        for (const [path, s] of [...sessions]) { s.handle({ kind: "failed", error: CANCELLED_MESSAGE }); dropSession(path, s); }
         researchFlow.endRun();
         pdfFlow.endRun();
-        tracker.clear();
-        new Notice("Cancelled all research jobs.");
+        // Clears pending reviews, spinners and status and shows the neutral notice.
+        hub.cancelAll();
       },
     });
 
@@ -341,26 +336,25 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     );
 
     const resumed = [...this.data.jobs];
-    for (const j of resumed) if (j.kind === "research") restoredPaths.add(j.path);
     this.stopFns = [
       () => queue.shutdown(),
+      // Before the modals close: a review closed by unload must not count as a cancel (keeps pendingReviews).
+      () => hub.dispose(),
       () => catalog.dispose(),
       () => { for (const t of timers) window.clearTimeout(t); timers.clear(); },
-      () => { unloaded = true; },
       () => spinner.stop(),
-      () => tracker.clear(),
-      () => { for (const [path, s] of [...sessions]) { dropSession(path, s); s.forceClose(); } },
       () => { for (const m of [...openModals]) m.close(); },
     ];
 
     // Nothing is enqueued from vault events until the layout is ready (avoids startup create-event storms).
+    // No modal opens at startup: restored reviews only get a notice with a Review button.
     this.registerEvent(this.app.workspace.on("layout-change", () => spinner.reattach()));
     this.app.workspace.onLayoutReady(() => {
       ready = true;
       spinner.reattach();
-      spinner.set(tracker.active());
       researchFlow.markReady();
       pdfFlow.markReady();
+      hub.restorePending(this.data.pendingReviews, resumed);
       queue.restore(resumed);
     });
   }

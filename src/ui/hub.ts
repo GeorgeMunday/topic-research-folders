@@ -1,9 +1,9 @@
 // Pure progress hub: turns flow/queue events into notices, status text and spinners. No `obsidian` import.
-import type { Job, Outline, SubfolderSuggestion } from "../types";
+import type { Job, Outline, PendingReview, SubfolderSuggestion } from "../types";
 import { ProgressTracker, RunGate, nextRunId, noticeFor } from "../progress";
 import type { ProgressSink, ProgressSource } from "../progress";
 
-export interface PendingReview { path: string; outline: Outline; }
+export type { PendingReview };
 
 export interface HubUi {
   notice(text: string, opts?: { error?: boolean; action?: { label: string; run: () => void } }): void;
@@ -13,7 +13,8 @@ export interface HubUi {
 }
 
 export interface HubActions {
-  startApproved(path: string, approved: SubfolderSuggestion[]): void;      // enqueue the research job with `approved`
+  /** Enqueue the research job with `approved` (the reviewed outline is passed for its summary). */
+  startApproved(path: string, approved: SubfolderSuggestion[], outline: Outline): void;
   cancelJob(kind: Job["kind"], path: string): boolean;
   retry(path: string): void;
   persistPending(list: PendingReview[]): void;
@@ -123,7 +124,7 @@ export class ProgressHub {
         if (approved && approved.length > 0) {
           this.gate.cancel(target);
           this.tracker.handle(target, { kind: "step", text: `Researching ${baseName(target)}…` }, { kind: "research", resumed: false });
-          this.actions.startApproved(target, approved);
+          this.actions.startApproved(target, approved, entry.outline);
         } else {
           this.tracker.clear(target);
           this.gate.cancel(target);

@@ -1,6 +1,6 @@
 import { PluginSettingTab, Setting } from "obsidian";
 import type { App, Plugin } from "obsidian";
-import type { Job } from "./types";
+import type { Job, Outline, PendingReview } from "./types";
 import { modelOptions, pickerView } from "./models";
 import type { ModelCache, ModelCatalog, ModelInfo } from "./models";
 
@@ -27,6 +27,8 @@ export interface PluginData {
   jobs: Job[];
   processedPdfs: Record<string, { path: string; date: string }>;
   modelCache: ModelCache | null;
+  /** Folder suggestions waiting for review; the outline job has finished. */
+  pendingReviews: PendingReview[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -75,8 +77,22 @@ function validJob(j: unknown): boolean {
   if (j.kind === "pdf") return true;
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
+  if (j.summary !== undefined && typeof j.summary !== "string") return false;
   if (j.approved === undefined) return true;
   return Array.isArray(j.approved) && j.approved.every((a) => isObj(a) && typeof a.name === "string");
+}
+
+function validPending(p: unknown): PendingReview | null {
+  if (!isObj(p) || typeof p.path !== "string" || !isObj(p.outline)) return null;
+  const o = p.outline;
+  if (typeof o.topic !== "string" || typeof o.summary !== "string" || !Array.isArray(o.subfolders)) return null;
+  if (!o.subfolders.every((s) => isObj(s) && typeof s.name === "string" && typeof s.why === "string")) return null;
+  const outline: Outline = {
+    topic: o.topic,
+    summary: o.summary,
+    subfolders: (o.subfolders as Record<string, unknown>[]).map((s) => ({ name: s.name as string, why: s.why as string })),
+  };
+  return { path: p.path, outline };
 }
 
 function validProcessed(raw: unknown): PluginData["processedPdfs"] {
@@ -131,6 +147,7 @@ export function mergeData(raw: unknown): PluginData {
     jobs: Array.isArray(src.jobs) ? (src.jobs.filter(validJob) as Job[]) : [],
     processedPdfs: validProcessed(src.processedPdfs),
     modelCache: validModelCache(src.modelCache),
+    pendingReviews: Array.isArray(src.pendingReviews) ? src.pendingReviews.flatMap((p) => { const v = validPending(p); return v ? [v] : []; }) : [],
   };
 }
 

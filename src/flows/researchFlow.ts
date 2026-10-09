@@ -1,4 +1,4 @@
-import type { Job, Outline, Progress, SubfolderSuggestion } from "../types";
+import type { Job, Outline, Progress } from "../types";
 import { ALREADY_RESEARCHED_MESSAGE, CANCELLED_MESSAGE, nextRunId, OUTLINE_STAGE_MS, type ProgressSink, type ProgressSource } from "../progress";
 import type { Settings } from "../settings";
 import type { ResearchClient } from "../research/claudeClient";
@@ -8,12 +8,10 @@ import { isRetryable } from "../jobs/backoff";
 import { isTriggerName, strippedPath } from "../trigger";
 import { uniqueName } from "../names";
 
-export interface Approver { approve(outline: Outline, jobPath: string): Promise<SubfolderSuggestion[] | null>; }
 export interface Notifier { info(msg: string): void; error(msg: string): void; }
 export interface ResearchDeps {
   client: () => ResearchClient | null;
   writer: VaultWriter;
-  approver: Approver;
   notify: Notifier;
   rename: (from: string, to: string) => Promise<void>;
   settings: () => Settings;
@@ -91,7 +89,7 @@ export class ResearchFlow {
 
   run: Runner = async (job, signal, checkpoint) => {
     if (job.kind !== "research") return;
-    const { writer, notify, approver, settings, today, progress, later } = this.deps;
+    const { writer, notify, settings, today, progress, later } = this.deps;
     const resumed = Boolean(job.approved);
     let runId: number;
     const prev = this.lastRun.get(job.path);
@@ -131,10 +129,11 @@ export class ResearchFlow {
     // Cancel-all may have landed while the checks above were awaiting.
     if (signal.cancelled) { cancelled(); return; }
 
-    let current: Job = job;
-    let outline: Outline | undefined;
-    let approved = job.approved;
+    const approved = job.approved;
     if (!approved) {
+      // Outline stage: deliver the suggestions and finish. The user reviews them later (Review button or
+      // command), which enqueues a new job with `approved`; nothing here waits for the user.
+      let outline: Outline;
       let cancelTimer: (() => void) | undefined;
       if (progress && s.useWebSearch) {
         emit({ kind: "step", text: "Searching the web…" });
@@ -153,15 +152,12 @@ export class ResearchFlow {
         cancelTimer?.();
       }
       if (signal.cancelled) { cancelled(); return; }
+      // No terminal event: the hub keeps the path pending until the review ends.
       emit({ kind: "outline", outline });
-      const picked = await approver.approve(outline, job.path);
-      if (signal.cancelled || !picked || picked.length === 0) { cancelled(); return; }
-      approved = picked;
-      current = { ...job, approved };
-      await checkpoint(current);
-    } else {
-      emit({ kind: "step", text: "Resuming research…" });
+      return;
     }
+    emit({ kind: "step", text: "Resuming research…" });
+    let current: Job = job;
 
     const done = [...job.done];
     // Titles are known only for subfolders written in this run; resumed (already done) ones link with no note titles.
@@ -201,7 +197,7 @@ export class ResearchFlow {
       return;
     }
 
-    const ov: Outline = outline ?? { topic, summary: "", subfolders: approved };
+    const ov: Outline = { topic, summary: job.summary ?? "", subfolders: approved };
     const links = approved
       .filter((a) => results.has(a.name) || done.includes(a.name))
       .map((a) => results.get(a.name) ?? { subfolder: a.name, noteTitles: [] });

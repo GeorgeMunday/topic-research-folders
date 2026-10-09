@@ -201,6 +201,8 @@ export class PdfFlow {
     const src = { kind: "pdf" as const, resumed: false, runId };
     const emit = (e: Progress) => this.deps.progress?.(job.path, e, src);
     const fail = (error: string) => emit({ kind: "failed", error });
+    // Outcomes go only through the sink when there is one (the hub shows the notice); otherwise a notice.
+    const report = (msg: string) => { if (this.deps.progress) fail(msg); else notify.error(msg); };
     // Cached chunk results survive only a retryable failure; every other exit clears them.
     let keep = false;
     try {
@@ -208,9 +210,7 @@ export class PdfFlow {
       emit({ kind: "step", text: `Preparing ${file}…` });
       const client = this.deps.client();
       if (!client || !settings().apiKey.trim()) {
-        const msg = "Add your Claude API key in the plugin settings before analysing PDFs.";
-        notify.error(msg);
-        fail(msg);
+        report("Add your Claude API key in the plugin settings before analysing PDFs.");
         return;
       }
       const root = await writer.findResearchRoot(job.path);
@@ -222,9 +222,7 @@ export class PdfFlow {
         split = await splitPdf(bytes, settings().pdfPagesPerChunk, MAX_CHUNK_BYTES);
       } catch (e) {
         if (e instanceof PdfError) {
-          const msg = `Could not analyse ${file}: the PDF is ${e.reason}.`;
-          notify.error(msg);
-          fail(msg);
+          report(`Could not analyse ${file}: the PDF is ${e.reason}.`);
           return;
         }
         fail(e instanceof Error ? e.message : String(e));
@@ -250,9 +248,7 @@ export class PdfFlow {
           results.push(r);
         } catch (e) {
           if (isRetryable(e)) { keep = true; if (!signal.cancelled) { this.retryPending.add(job.path); emit({ kind: "step", text: `Retrying ${file} after a temporary error…` }); } throw e; }
-          const msg = `Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`;
-          notify.error(msg);
-          fail(msg);
+          report(`Could not analyse ${file}: ${e instanceof Error ? e.message : String(e)}`);
           return;
         }
       }
@@ -268,7 +264,8 @@ export class PdfFlow {
         throw e;
       }
       emit({ kind: "done", folders: new Set(written.map((w) => w.folder)).size, notes: written.length });
-      notify.info(`Extracted ${merged.notes.length} notes from ${file}`);
+      // With a sink the hub turns `done` into the notice.
+      if (!this.deps.progress) notify.info(`Extracted ${merged.notes.length} notes from ${file}`);
     } finally {
       this.inFlight.delete(hash);
       if (!keep) { this.chunkCache.delete(hash); this.cacheHashByPath.delete(job.path); }
