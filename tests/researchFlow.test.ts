@@ -600,3 +600,51 @@ describe("progress events", () => {
     await expect(e.run(rjob("T"))).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+describe("run identity", () => {
+  function withSink() {
+    const s = setup();
+    const events: [string, Progress, ProgressSource][] = [];
+    s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
+    return { ...s, events, ids: () => [...new Set(events.map((x) => x[2].runId))] };
+  }
+  test("all events of one successful run share one runId", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    expect(s.events.length).toBeGreaterThan(3);
+    expect(s.ids()).toHaveLength(1);
+    expect(typeof s.ids()[0]).toBe("number");
+  });
+  test("two successive runs for the same path carry different runIds", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    const first = s.ids()[0];
+    s.v.files.clear();
+    await s.run(rjob("T"));
+    expect(s.ids()).toHaveLength(2);
+    expect(s.events.at(-1)![2].runId).not.toBe(first);
+  });
+  test("a retry invocation after a retryable error keeps the runId", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    const orig = s.deps.client()!;
+    let fail = true;
+    s.deps.client = () => ({ ...orig, outline: async (...a: [string, string[], number]) => { if (fail) { fail = false; throw new ApiError("overloaded", 503); } return orig.outline(...a); } });
+    await expect(s.run(rjob("T"))).rejects.toBeInstanceOf(ApiError);
+    await s.run(rjob("T"));
+    expect(s.ids()).toHaveLength(1);
+  });
+  test("a pre-start reject carries a runId different from the previous run's", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    await s.run(rjob("T"));
+    const first = s.ids()[0];
+    await s.run(rjob("T"));
+    const last = s.events.at(-1)!;
+    expect(last[1]).toMatchObject({ kind: "failed" });
+    expect(typeof last[2].runId).toBe("number");
+    expect(last[2].runId).not.toBe(first);
+  });
+});

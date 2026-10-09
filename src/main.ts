@@ -15,7 +15,7 @@ import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
 import { PdfFlow } from "./flows/pdfFlow";
 import { decideRename } from "./events";
-import { ProgressTracker, noticeFor, CANCELLED_MESSAGE } from "./progress";
+import { ProgressTracker, RunGate, noticeFor, CANCELLED_MESSAGE } from "./progress";
 import type { ProgressSink } from "./progress";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
 import { ResearchProgressModal } from "./ui/ResearchProgressModal";
@@ -123,6 +123,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     };
     tracker.onChange(() => { updateStatus(); spinner.set(tracker.active()); });
 
+    const gate = new RunGate();
+    let unloaded = false;
+    let syntheticRun = 0;
     const sessions = new Map<string, ResearchProgressModal>();
     const noticed = new Set<string>();
     const dropSession = (path: string, s: ResearchProgressModal) => {
@@ -131,7 +134,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     };
     const createSession = (path: string): ResearchProgressModal => {
       const session: ResearchProgressModal = new ResearchProgressModal(this.app, baseName(path), {
-        onCancel: () => { queue.cancelJob("research", path); tracker.clear(path); dropSession(path, session); },
+        onCancel: () => { queue.cancelJob("research", path); gate.cancel(path); researchFlow.endRun(path); tracker.clear(path); dropSession(path, session); },
         onRetry: () => { dropSession(path, session); guard(researchFlow.researchFolder(path)); },
         onClosed: () => { if (session.isDone()) dropSession(path, session); },
       });
@@ -141,12 +144,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     };
 
     const sink: ProgressSink = (path, e, src) => {
-      const wasActive = tracker.active().includes(path);
+      if (unloaded || !gate.accept(path, e, src)) return;
       tracker.handle(path, e, src);
       if (src.kind !== "research") return;
-      if (e.kind === "step" && !wasActive) {
-        for (const k of [...noticed]) if (k.startsWith(`${path}|`)) noticed.delete(k);
-      }
       let session = sessions.get(path);
       if (e.kind === "step" && !src.resumed) {
         if (session?.isDone()) { const old = session; dropSession(path, old); old.forceClose(); session = undefined; }
@@ -155,7 +155,8 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       session?.handle(e);
       const note = noticeFor(path, e, src, { modalOpen: session?.isVisible() ?? false, topic: baseName(path) });
       if (note) {
-        const key = e.kind === "itemDone" ? `${path}|item|${e.name}` : `${path}|end`;
+        const run = src.runId ?? path;
+        const key = e.kind === "itemDone" ? `${run}|item|${e.name}` : `${run}|end`;
         if (!noticed.has(key)) {
           noticed.add(key);
           if (note.error) notify.error(note.text); else notify.info(note.text);
@@ -182,13 +183,17 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         onChange: (r, q) => {
           statusRQ.r = r;
           statusRQ.q = q;
+          // After a loading-state Cancel the status bar can stay at 1/0 until the in-flight HTTP call returns.
           if (r + q === 0) tracker.clear();
           updateStatus();
         },
         onFailed: (job, err) => {
           pdfFlow.dropCache(job.path);
           const msg = err instanceof Error ? err.message : "unexpected error";
-          sink(job.path, { kind: "failed", error: msg }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved });
+          // Reuse the run id the flow used so a failed it already sent is deduplicated; the queue gave up, so forget any pending retry.
+          const runId = gate.currentRun(job.path) ?? -(++syntheticRun);
+          if (job.kind === "research") researchFlow.endRun(job.path); else pdfFlow.endRun(job.path);
+          sink(job.path, { kind: "failed", error: msg }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved, runId });
           if (job.kind === "pdf") notify.error(`Research job failed (${job.kind}: ${job.path}): ${msg}`);
         },
         onPersistError: (e) => {
@@ -314,8 +319,10 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         if (!needReady()) return;
         queue.cancelAll();
         pdfFlow.dropCache();
+        for (const path of new Set([...tracker.active(), ...sessions.keys()])) gate.cancel(path);
         for (const [path, s] of [...sessions]) { s.handle({ kind: "failed", error: CANCELLED_MESSAGE }); dropSession(path, s); }
-        sessions.clear();
+        researchFlow.endRun();
+        pdfFlow.endRun();
         tracker.clear();
         new Notice("Cancelled all research jobs.");
       },
@@ -334,9 +341,10 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       () => queue.shutdown(),
       () => catalog.dispose(),
       () => { for (const t of timers) window.clearTimeout(t); timers.clear(); },
+      () => { unloaded = true; },
       () => spinner.stop(),
       () => tracker.clear(),
-      () => { for (const [path, s] of [...sessions]) { dropSession(path, s); s.forceClose(); } sessions.clear(); },
+      () => { for (const [path, s] of [...sessions]) { dropSession(path, s); s.forceClose(); } },
       () => { for (const m of [...openModals]) m.close(); },
     ];
 

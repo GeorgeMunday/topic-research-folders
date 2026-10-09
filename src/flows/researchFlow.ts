@@ -31,6 +31,10 @@ const parentOf = (p: string) => (p.lastIndexOf("/") >= 0 ? p.slice(0, p.lastInde
 
 export class ResearchFlow {
   private ready = false;
+  private runCounter = 0;
+  private lastRun = new Map<string, number>();
+  // Paths whose last invocation ended in a retryable rethrow: the queue's retry is the same logical run.
+  private retryPending = new Set<string>();
 
   constructor(private deps: ResearchDeps) {}
 
@@ -76,15 +80,24 @@ export class ResearchFlow {
     this.deps.enqueue({ id: `research:${path}`, kind: "research", path, done: [] });
   }
 
+  /** Forget a pending retry (the queue gave up or the job was cancelled) so the next run gets a fresh id. */
+  endRun(path?: string): void {
+    if (path === undefined) this.retryPending.clear(); else this.retryPending.delete(path);
+  }
+
   run: Runner = async (job, signal, checkpoint) => {
     if (job.kind !== "research") return;
     const { writer, notify, approver, settings, today, progress, later } = this.deps;
     const resumed = Boolean(job.approved);
-    const src: ProgressSource = { kind: "research", resumed };
+    let runId: number;
+    const prev = this.lastRun.get(job.path);
+    if (this.retryPending.delete(job.path) && prev !== undefined) runId = prev;
+    else { runId = ++this.runCounter; this.lastRun.set(job.path, runId); }
+    const src: ProgressSource = { kind: "research", resumed, runId };
     const emit = (e: Progress) => { if (progress) progress(job.path, e, src); };
     const finish = (e: Progress & { kind: "done" | "failed" }) => emit(e);
     const cancelled = () => finish({ kind: "failed", error: CANCELLED_MESSAGE });
-    const retrying = (err: unknown) => { if (isRetryable(err)) emit({ kind: "step", text: "Retrying after a temporary error…" }); };
+    const retrying = (err: unknown) => { if (isRetryable(err)) { this.retryPending.add(job.path); emit({ kind: "step", text: "Retrying after a temporary error…" }); } };
     // Pre-start exits: the sink gets a terminal failed with the notice text; otherwise the notice itself.
     const reject = (msg: string, level: "info" | "error") => {
       if (progress) finish({ kind: "failed", error: msg });

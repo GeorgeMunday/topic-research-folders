@@ -700,3 +700,21 @@ describe("progress events", () => {
     expect(kinds().some((e) => e.kind === "failed" || e.kind === "done")).toBe(false);
   });
 });
+
+describe("pdf run identity", () => {
+  test("events of one run share a runId and a second run gets a new one", async () => {
+    const c = setup();
+    const events: [string, Progress, ProgressSource][] = [];
+    (c.flow as any).deps.progress = (p: string, e: Progress, src: ProgressSource) => { events.push([p, e, src]); };
+    c.files.set("Topic/secret.pdf", encrypted);
+    await c.flow.run(job("Topic/secret.pdf"), noSignal, noCp);
+    const n = events.length;
+    await c.flow.run(job("Topic/secret.pdf"), noSignal, noCp);
+    const a = new Set(events.slice(0, n).map((x) => x[2].runId));
+    const b = new Set(events.slice(n).map((x) => x[2].runId));
+    expect(a.size).toBe(1);
+    expect(b.size).toBe(1);
+    expect([...a][0]).not.toBe([...b][0]);
+    expect(typeof [...a][0]).toBe("number");
+  });
+});

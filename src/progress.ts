@@ -1,6 +1,6 @@
 import type { Progress } from "./types";
 
-export interface ProgressSource { kind: "research" | "pdf"; resumed: boolean; }
+export interface ProgressSource { kind: "research" | "pdf"; resumed: boolean; runId?: number; }
 export type ProgressSink = (path: string, e: Progress, src: ProgressSource) => void;
 export const CANCELLED_MESSAGE = "Cancelled";
 export const OUTLINE_STAGE_MS = 8000;
@@ -80,4 +80,35 @@ export function noticeFor(
   }
   if (e.kind === "itemDone" && !e.ok) return { text: `Could not research "${e.name}": ${e.error ?? "unknown error"}`, error: true };
   return null;
+}
+
+// Decides whether a progress event belongs to the run the UI currently tracks for a path.
+export class RunGate {
+  private current = new Map<string, number>();
+  private ended = new Set<string>();
+  private cancelled = new Set<number>();
+
+  accept(path: string, e: Progress, src: ProgressSource): boolean {
+    const id = src.runId;
+    if (id === undefined) return true;
+    if (this.cancelled.has(id)) return false;
+    const cur = this.current.get(path);
+    if (cur !== id) {
+      if (cur !== undefined && id < cur) return false;
+      if (!(cur === undefined || this.ended.has(path) || e.kind === "step")) return false;
+      this.current.set(path, id);
+      this.ended.delete(path);
+    }
+    if (e.kind === "done" || e.kind === "failed") this.ended.add(path);
+    return true;
+  }
+
+  currentRun(path: string): number | undefined { return this.current.get(path); }
+
+  cancel(path: string): void {
+    const cur = this.current.get(path);
+    if (cur !== undefined) this.cancelled.add(cur);
+    this.current.delete(path);
+    this.ended.delete(path);
+  }
 }

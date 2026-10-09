@@ -1,5 +1,5 @@
-import { test, expect } from "vitest";
-import { ProgressTracker, CANCELLED_MESSAGE, noticeFor } from "../src/progress";
+import { test, expect, describe } from "vitest";
+import { ProgressTracker, CANCELLED_MESSAGE, noticeFor, RunGate } from "../src/progress";
 
 const src = { kind: "research" as const, resumed: false };
 
@@ -90,4 +90,50 @@ test("noticeFor: failed and itemDone", () => {
   expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: false, error: "bad" }, src, ctx)).toEqual({ text: 'Could not research "Anatomy": bad', error: true });
   expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: false }, src, ctx)?.text).toBe('Could not research "Anatomy": unknown error');
   expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: true }, src, ctx)).toBeNull();
+});
+
+describe("RunGate", () => {
+  const r = (runId: number) => ({ kind: "research" as const, resumed: false, runId });
+  const step = { kind: "step" as const, text: "x" };
+  const failed = { kind: "failed" as const, error: "boom" };
+  test("accepts the first event of a run and later events of the same run", () => {
+    const g = new RunGate();
+    expect(g.accept("A", step, r(1))).toBe(true);
+    expect(g.accept("A", { kind: "outline", outline: { topic: "A", summary: "", subfolders: [] } }, r(1))).toBe(true);
+  });
+  test("ignores a stale run after a new run started", () => {
+    const g = new RunGate();
+    g.accept("A", step, r(1));
+    expect(g.accept("A", step, r(2))).toBe(true);
+    expect(g.accept("A", failed, r(1))).toBe(false);
+    expect(g.accept("A", step, r(1))).toBe(false);
+  });
+  test("ignores events of a cancelled run, and a new run can start afterwards", () => {
+    const g = new RunGate();
+    g.accept("A", step, r(1));
+    g.cancel("A");
+    expect(g.accept("A", failed, r(1))).toBe(false);
+    expect(g.accept("A", step, r(2))).toBe(true);
+    expect(g.accept("A", failed, r(1))).toBe(false);
+  });
+  test("a pre-start failed with a new runId is accepted and starts a run", () => {
+    const g = new RunGate();
+    g.accept("A", step, r(1));
+    g.accept("A", { kind: "done", folders: 1, notes: 1 }, r(1));
+    expect(g.accept("A", failed, r(2))).toBe(true);
+    expect(g.currentRun("A")).toBe(2);
+    expect(g.accept("A", failed, r(1))).toBe(false);
+  });
+  test("a duplicate failed within a run is accepted; events without a runId pass", () => {
+    const g = new RunGate();
+    g.accept("A", step, r(1));
+    expect(g.accept("A", failed, r(1))).toBe(true);
+    expect(g.accept("A", failed, r(1))).toBe(true);
+    expect(g.accept("A", step, { kind: "research", resumed: false })).toBe(true);
+  });
+  test("a non-step event of a different run is ignored while the current run is live", () => {
+    const g = new RunGate();
+    g.accept("A", step, r(1));
+    expect(g.accept("A", failed, r(2))).toBe(false);
+  });
 });
