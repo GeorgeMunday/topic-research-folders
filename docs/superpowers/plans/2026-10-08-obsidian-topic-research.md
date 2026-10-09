@@ -1555,3 +1555,39 @@ test("mergeData keeps capability flags in the cache and tolerates old caches wit
 2. `History/World War 2+`: notes have Timeline and Key people.
 3. The icon appears in the ribbon and the status bar.
 4. The README renders cleanly on GitHub.
+
+---
+
+# Tasks 24–29: explorer status icons, pop-up fixes, learning order, sources, undo, README (sections 1–6)
+
+> Same rules as before: test-first (capture the red run), `npm test` and `npm run build` pass before each section is committed, **one commit per section**, fake HTTP only, pure logic never imports `obsidian`.
+
+## Decisions
+
+- **State machine** (`src/ui/marks.ts`, pure): a `MarkBoard` holds one mark per path: `working`, `ready`, `done`, `failed`; cancelled removes the mark. Allowed moves: anything → `working`; `working` → `ready | done | failed`; nothing → `ready` (a restored review) or `failed` (a run rejected before it started); `done` removes itself after 3 s (injected `later`). Illegal moves (e.g. `ready → done`) are ignored. `iconFor(mark)` maps each state to icon, tooltip and click action (`review`, `retry`, none).
+- The hub owns the board. `HubUi` gets `setMarks(marks)` (ready/done/failed only); `setSpinners` now carries only *working* paths (a pending review is a sparkle, not a spinner). The Notice "Suggestions ready — Review" and the status text "Suggestions ready (N)" are removed.
+- **Fallback:** the explorer layer reports the ready paths it could not place; `main.ts` then shows `✦ N ready to review` in the status bar, and clicking it opens the review. Never a popup.
+- Failed marks are for research and PDF runs (a key point failure keeps its error notice). Retry = the same call as "Research this folder" / the PDF trigger for that path.
+- **Pop-up:** pure helpers in `src/ui/selection.ts` (row model with add/reorder/select-all, `insideLine`); the modal only renders them. Drag uses pointer events on a handle; ↑/↓ buttons do the same move.
+- **Numbering:** done in `selectApproved` (pure) from the final row order, so created folders are `01 - Name`; the prefix is added after `sanitiseName`'s 100-character cap. A setting `numberFolders` (default on) turns it off. The numbered names are what the approved job carries, so the Overview's "Study path" list (ordered, linking each folder) follows without extra state.
+- **Sources:** `ClaudeClient.call` returns the text plus the citations found in `web_search_tool_result` / `citations` blocks (real URLs only, deduplicated, max 5 per call). `parseNotes` attaches them to every note of that call; the `## Sources` section goes last (after My notes). PDF-derived notes list `[[paper.pdf]] (p. N–M)` from the key point's pages; no sources → no section.
+- **Undo:** each flow records what it created (folders, files, the suffix rename) via the writer into a run log (`runLog`, last 20 runs) in plugin data. `planUndo` (pure) decides per item: delete (unedited file), keep (edited since creation: `mtime > ctime + slack`, or folder with other files), and returns counts for the confirm modal. Deletion uses `vault.trash(file, true)`.
+- Out of scope, left alone: popout-window spinner, settings-tab tests, cancel-again limitation.
+
+### Task 24: Explorer status icons (section 1)
+- [ ] Tests (`tests/marks.test.ts`, hub tests updated): transitions, `iconFor`, done fade timer, reduced motion CSS, hub marks/no Notice, fallback status text. **Commit** `feat: show research state as an icon in the file explorer`.
+
+### Task 25: Suggestion pop-up (section 2)
+- [ ] Tests (`tests/suggestionRows.test.ts`): full-width CSS, inside line, select all/none, add own row (empty ignored), move up/down/drag keeps order, keyboard handler. **Commit** `feat: pop-up shows context, select all, add and reorder`.
+
+### Task 26: Learning order (section 3)
+- [ ] Tests: prompt asks simplest first, zero-padded prefixes follow the final order, collisions ` (2)`, setting off → no prefix, Study path list. **Commit** `feat: number folders in learning order`.
+
+### Task 27: Sources (section 4)
+- [ ] Tests: citation parsing, dedupe, cap 5, omission, PDF note source line. **Commit** `feat: list real sources at the end of each note`.
+
+### Task 28: Undo last research (section 5)
+- [ ] Tests: only logged items removed, edited files kept, non-empty folders kept, suffix rename undone only if empty, log capped at 20. **Commit** `feat: undo last research`.
+
+### Task 29: README (section 6)
+- [ ] Test: README mentions each feature and no longer the review Notice or loading modal. **Commit** `docs: README for the new features`.
