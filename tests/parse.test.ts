@@ -82,3 +82,16 @@ test("parsePdfOverview: ParseError for no JSON, missing keyPoints, or no key poi
   expect(() => parsePdfOverview(ov([], { summary: " " }), [])).toThrow(ParseError);
   expect(() => parsePdfOverview(ov([kp(1, { name: "" })], { summary: "" }), [])).toThrow(ParseError);
 });
+
+test("parsePdfOverview: a point text without a (p. N) tag gets one from the first number in pages", () => {
+  const r = parsePdfOverview(ov([
+    kp(1, { text: "No tag here", pages: "12-14" }),
+    kp(2, { text: "No tag, no pages", pages: "" }),
+    kp(3, { text: "Already tagged (p. 3)", pages: "9" }),
+    kp(4, { text: "Range tag (pp. 4-5)", pages: "4-5" }),
+    kp(5, { text: "Numeric pages", pages: 7 }),
+  ]), []);
+  expect(r.keyPoints.map((p) => p.text)).toEqual([
+    "No tag here (p. 12)", "No tag, no pages", "Already tagged (p. 3)", "Range tag (pp. 4-5)", "Numeric pages (p. 7)",
+  ]);
+});

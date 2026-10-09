@@ -101,9 +101,12 @@ export function parsePdfOverview(text: string, subfolders: string[]): PdfOvervie
   for (const k of data.keyPoints) {
     if (!isObj(k)) continue;
     const name = str(k.name).split(/\s+/).filter((w) => w !== "").slice(0, MAX_NAME_WORDS).join(" ");
-    const pointText = str(k.text);
+    let pointText = str(k.text);
     if (!name || !pointText) continue;
     const pages = typeof k.pages === "number" && Number.isFinite(k.pages) ? String(k.pages) : str(k.pages);
+    // Every key point ends with its page reference; add it from `pages` when the model left it out.
+    const first = /\d+/.exec(pages);
+    if (!/\(pp?\.\s*[^)]*\)\s*\.?$/i.test(pointText) && first) pointText = `${pointText} (p. ${first[0]})`;
     const point: KeyPoint = { name, text: pointText, detail: str(k.detail), pages };
     const sub = canonical.get(str(k.subfolder).toLowerCase());
     if (sub !== undefined && str(k.subfolder) !== "") point.subfolder = sub;
