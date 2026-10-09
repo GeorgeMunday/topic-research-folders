@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { ProgressTracker, CANCELLED_MESSAGE } from "../src/progress";
+import { ProgressTracker, CANCELLED_MESSAGE, noticeFor } from "../src/progress";
 
 const src = { kind: "research" as const, resumed: false };
 
@@ -70,4 +70,24 @@ test("clear(path) and clear() remove paths and notify subscribers once", () => {
   off();
   t.handle("D", { kind: "step", text: "d" }, src);
   expect(n).toBe(5);
+});
+
+const ctx = { modalOpen: false, topic: "Black holes" };
+test("noticeFor: null for pdf sources, non-terminal events and an open modal", () => {
+  const pdf = { kind: "pdf" as const, resumed: false };
+  expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, pdf, ctx)).toBeNull();
+  expect(noticeFor("A", { kind: "step", text: "x" }, src, ctx)).toBeNull();
+  expect(noticeFor("A", { kind: "writing", index: 1, total: 2, name: "n" }, src, ctx)).toBeNull();
+  expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, src, { ...ctx, modalOpen: true })).toBeNull();
+});
+test("noticeFor: done with singular and plural", () => {
+  expect(noticeFor("A", { kind: "done", folders: 1, notes: 1 }, src, ctx)).toEqual({ text: "Researched Black holes: 1 folder, 1 note", error: false });
+  expect(noticeFor("A", { kind: "done", folders: 3, notes: 0 }, src, ctx)).toEqual({ text: "Researched Black holes: 3 folders, 0 notes", error: false });
+});
+test("noticeFor: failed and itemDone", () => {
+  expect(noticeFor("A", { kind: "failed", error: CANCELLED_MESSAGE }, src, ctx)).toBeNull();
+  expect(noticeFor("A", { kind: "failed", error: "boom" }, src, ctx)).toEqual({ text: "Research failed for Black holes: boom", error: true });
+  expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: false, error: "bad" }, src, ctx)).toEqual({ text: 'Could not research "Anatomy": bad', error: true });
+  expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: false }, src, ctx)?.text).toBe('Could not research "Anatomy": unknown error');
+  expect(noticeFor("A", { kind: "itemDone", name: "Anatomy", ok: true }, src, ctx)).toBeNull();
 });

@@ -44,3 +44,28 @@
   .trf-spinner::before { content: "…"; }
   .trf-progress > div { transition: none; }
 }
+
+.nav-folder-title.trf-working::after,
+.nav-file-title.trf-working::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  border-radius: 50%;
+  animation: trf-rotate 0.9s linear infinite;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-folder-title.trf-working::after,
+  .nav-file-title.trf-working::after {
+    animation: none;
+    content: "…";
+    border: none;
+    width: auto;
+    height: auto;
+  }
+}

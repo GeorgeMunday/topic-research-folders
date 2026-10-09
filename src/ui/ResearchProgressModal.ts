@@ -5,7 +5,7 @@ import type { Approver } from "../flows/researchFlow";
 import { selectApproved, type SuggestionRow } from "./selection";
 import { initialState, reduce, progressFraction, summaryText, writingText, itemText, type ModalState } from "./progressModel";
 
-export interface ProgressModalHooks { onCancel: () => void; onRetry: () => void; }
+export interface ProgressModalHooks { onCancel: () => void; onRetry: () => void; onClosed?: () => void; }
 
 export class ResearchProgressModal extends Modal implements Approver {
   private state: ModalState;
@@ -28,6 +28,8 @@ export class ResearchProgressModal extends Modal implements Approver {
   private closeIfOpen(): void {
     if (this.isOpen) this.close();
   }
+
+  isVisible(): boolean { return this.isOpen; }
 
   isDone(): boolean {
     const p = this.state.phase;
@@ -66,6 +68,7 @@ export class ResearchProgressModal extends Modal implements Approver {
     this.isOpen = false;
     this.contentEl.empty();
     this.settle(null);
+    this.hooks.onClosed?.();
   }
 
   private render(): void {

@@ -63,3 +63,21 @@ export class ProgressTracker {
     for (const fn of [...this.listeners]) { try { fn(); } catch { /* ignore */ } }
   }
 }
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+export function noticeFor(
+  _path: string,
+  e: Progress,
+  src: ProgressSource,
+  ctx: { modalOpen: boolean; topic: string },
+): { text: string; error: boolean } | null {
+  if (src.kind !== "research" || ctx.modalOpen) return null;
+  if (e.kind === "done") return { text: `Researched ${ctx.topic}: ${plural(e.folders, "folder")}, ${plural(e.notes, "note")}`, error: false };
+  if (e.kind === "failed") {
+    if (e.error === CANCELLED_MESSAGE) return null;
+    return { text: `Research failed for ${ctx.topic}: ${e.error}`, error: true };
+  }
+  if (e.kind === "itemDone" && !e.ok) return { text: `Could not research "${e.name}": ${e.error ?? "unknown error"}`, error: true };
+  return null;
+}
