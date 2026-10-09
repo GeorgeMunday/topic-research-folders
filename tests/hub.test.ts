@@ -255,7 +255,6 @@ test("queue failure of a live run (gave up retrying) shows one error notice and 
   const job: Job = { id: "pdf:T/paper.pdf", kind: "pdf", path: "T/paper.pdf" };
   h.hub.sink(job.path, { kind: "step", text: "Retrying paper.pdf after a temporary error…" }, { kind: "pdf", resumed: false, runId: id });
   h.hub.onQueueFailed(job, new Error("overloaded"));
-  h.hub.onQueueFailed(job, "not an error");
   expect(h.notices).toEqual([{ text: "Could not analyse paper.pdf: overloaded", error: true, action: undefined }]);
   expect(h.spin()).toEqual([]);
 });
@@ -303,7 +302,7 @@ test("onQueueChange(0,0) clears spinners and status but keeps spinners of pendin
   h.hub.sink("A", { kind: "outline", outline }, research(nextRunId()));
   h.hub.sink("B", { kind: "step", text: "Writing" }, research(nextRunId()));
   h.hub.onQueueChange(1, 1);
-  expect(h.spin()).toEqual(["A", "B"]);
+  expect(h.spin()).toEqual(["B", "A"]);
   h.hub.onQueueChange(0, 0);
   expect(h.spin()).toEqual(["A"]);
   expect(h.status()).toBe("Suggestions ready (1)");
@@ -394,4 +393,55 @@ test("dispose ignores later events", async () => {
   await p;
   expect(counts()).toEqual(before);
   expect(h.hub.menuItems()).toEqual([]);
+});
+
+test("fix I1: failure dedupe is one-shot; a later queue failure with no flow event shows a notice", () => {
+  const h = setup();
+  const id = nextRunId();
+  const job: Job = { id: `research:${T}`, kind: "research", path: T, done: [] };
+  h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
+  h.hub.sink(T, { kind: "failed", error: "disk full" }, research(id));
+  h.hub.onQueueFailed(job, new Error("disk full"));
+  expect(h.notices).toHaveLength(1);
+  h.hub.onQueueFailed(job, new Error("still broken"));
+  expect(h.notices.map((n) => n.text)).toEqual([
+    "Research failed for Black holes: disk full",
+    "Research failed for Black holes: still broken",
+  ]);
+});
+
+test("fix I2: the approved run's first event may be a failed with a new run id; it is accepted and noticed", async () => {
+  const h = setup();
+  const id = nextRunId();
+  h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
+  h.hub.sink(T, { kind: "outline", outline }, research(id));
+  const p = h.hub.review(T);
+  h.reviews[0].resolve([outline.subfolders[0]]);
+  await p;
+  expect(h.spin()).toEqual([T]);
+  const id2 = nextRunId();
+  h.hub.sink(T, { kind: "failed", error: "Add your Claude API key" }, research(id2, true));
+  expect(h.notices[h.notices.length - 1]).toEqual({ text: "Research failed for Black holes: Add your Claude API key", error: true, action: undefined });
+  expect(h.spin()).toEqual([]);
+  expect(h.status()).toBe("");
+});
+
+test("fix I2: a trailing failed(Cancelled) of the outline run gives no notice and keeps the pending spinner", () => {
+  const h = setup();
+  const id = nextRunId();
+  h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
+  h.hub.sink(T, { kind: "outline", outline }, research(id));
+  h.hub.sink(T, { kind: "failed", error: CANCELLED_MESSAGE }, research(id));
+  expect(h.notices.map((n) => n.text)).toEqual(["Suggestions ready for Black holes"]);
+  expect(h.spin()).toEqual([T]);
+  expect(h.hub.pending()).toHaveLength(1);
+});
+
+test("fix I2: status after an outline event shows 'Suggestions ready (1)', not 'Choosing folders…'", () => {
+  const h = setup();
+  const id = nextRunId();
+  h.hub.sink(T, { kind: "step", text: "Researching Black holes…" }, research(id));
+  h.hub.sink(T, { kind: "outline", outline }, research(id));
+  expect(h.status()).toBe("Suggestions ready (1)");
+  expect(h.statuses).not.toContain("Choosing folders…");
 });

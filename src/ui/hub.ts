@@ -29,6 +29,8 @@ export class ProgressHub {
   private noticed = new Set<string>();
   // Last run per path that ended with a failed event (lets a queue failure reuse that run id).
   private lastFailed = new Map<string, { kind: ProgressSource["kind"]; runId: number }>();
+  // Run id of the outline run behind each pending review.
+  private pendingRun = new Map<string, number>();
   private counts = { running: 0, queued: 0 };
   private shownStatus = "";
   private shownSpinners: string[] = [];
@@ -38,6 +40,12 @@ export class ProgressHub {
 
   readonly sink: ProgressSink = (path, e, src) => {
     if (this.disposed) return;
+    // A repeat outline of the run that produced the pending review replaces it (that run is already ended in the gate).
+    if (src.kind === "research" && e.kind === "outline" && src.runId !== undefined && this.pendingRun.get(path) === src.runId) {
+      this.recordOutline(path, e.outline, src);
+      this.refresh();
+      return;
+    }
     if (!this.gate.accept(path, e, src)) return;
     this.tracker.handle(path, e, src);
     if (e.kind === "failed" && src.runId !== undefined) this.lastFailed.set(path, { kind: src.kind, runId: src.runId });
@@ -73,11 +81,14 @@ export class ProgressHub {
     else if (prev && prev.kind === job.kind && prev.runId === cur) runId = prev.runId;
     else runId = nextRunId();
     this.sink(job.path, { kind: "failed", error: message }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved, runId });
+    // One-shot: the queue gave up on this job, so a later failure on the path belongs to a new job.
+    this.lastFailed.delete(job.path);
   }
 
   restorePending(list: PendingReview[], jobs: Job[]): void {
     if (this.disposed) return;
     this.pendingList = list.map((p) => ({ ...p }));
+    this.pendingRun.clear();
     for (const p of this.pendingList) this.showReady(p.path);
     for (const job of jobs) {
       this.tracker.handle(job.path, { kind: "step", text: `Resuming ${baseName(job.path)}…` }, { kind: job.kind, resumed: true });
@@ -108,7 +119,9 @@ export class ProgressHub {
         if (this.disposed || !this.pendingList.includes(entry)) return;
         this.pendingList = this.pendingList.filter((p) => p !== entry);
         this.actions.persistPending(this.pending());
+        this.pendingRun.delete(target);
         if (approved && approved.length > 0) {
+          this.gate.cancel(target);
           this.tracker.handle(target, { kind: "step", text: `Researching ${baseName(target)}…` }, { kind: "research", resumed: false });
           this.actions.startApproved(target, approved);
         } else {
@@ -126,6 +139,7 @@ export class ProgressHub {
     if (this.disposed) return;
     for (const p of new Set([...this.tracker.active(), ...this.pendingList.map((x) => x.path)])) this.gate.cancel(p);
     this.pendingList = [];
+    this.pendingRun.clear();
     this.actions.persistPending([]);
     this.tracker.clear();
     this.refresh();
@@ -152,6 +166,11 @@ export class ProgressHub {
     const notify = src.runId !== undefined ? !this.noticed.has(`${src.runId}|outline`) : existing < 0;
     if (src.runId !== undefined) this.noticed.add(`${src.runId}|outline`);
     if (notify) this.showReady(path);
+    // The outline run is over once a review is pending: ignore its trailing events and let the pending set
+    // keep the spinner, so the approved run (new id) is accepted even when its first event is a failed.
+    if (src.runId !== undefined) this.pendingRun.set(path, src.runId); else this.pendingRun.delete(path);
+    this.gate.cancel(path);
+    this.tracker.clear(path);
   }
 
   private showReady(path: string): void {
