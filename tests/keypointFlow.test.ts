@@ -47,7 +47,7 @@ const FIVE: PdfOverview = { summary: "About stars.", plainWords: "Stars are hot.
 
 const kjob = (folder: string, name: string, over: Partial<Job> = {}): Job => ({
   id: `keypoint:${folder}/${name}.md`, kind: "keypoint", path: `${folder}/${name}.md`, folder, pdfName: "paper.pdf",
-  topic: "paper", parents: [], point: kp(name, 3), ...over,
+  topic: "paper", parents: [], docSummary: "A paper about stars.", point: kp(name, 3), ...over,
 } as Job);
 
 type Ev = [string, Progress, ProgressSource];
@@ -82,7 +82,7 @@ describe("keypoint run", () => {
     expect(u.notes).toHaveBeenCalledTimes(1);
     expect(u.notes.mock.calls[0]).toEqual([
       "Stars paper", ["Space"],
-      { name: "Fusion", why: "Fusion is central (p. 3) — from the PDF: The paper discusses Fusion." },
+      { name: "Fusion", why: "Fusion is central (p. 3) — from the PDF \"paper.pdf\" (A paper about stars.): The paper discusses Fusion." },
       4,
     ]);
     for (const i of [1, 2, 3, 4]) expect(u.v.files.get(`Stars/Fusion/Fusion ${i}.md`)).toContain('subtopic: "Fusion"');
@@ -95,6 +95,16 @@ describe("keypoint run", () => {
     expect(u.events.every(([p, , s]) => p === "Stars/Fusion/Fusion.md" && s.kind === "keypoint" && s.resumed === false)).toBe(true);
     expect(new Set(u.events.map((e) => e[2].runId)).size).toBe(1);
     expect([...u.errors, ...u.infos]).toEqual([]);
+  });
+
+  test("a restored job saved before docSummary existed still runs (missing summary treated as empty)", async () => {
+    const u = unit();
+    u.v.folders.add("F");
+    const old = kjob("F", "Fusion") as any;
+    delete old.docSummary;
+    await u.flow.run(old, noSignal, noCp);
+    expect(u.notes.mock.calls[0][2]).toEqual({ name: "Fusion", why: 'Fusion is central (p. 3) — from the PDF "paper.pdf": The paper discusses Fusion.' });
+    expect(u.kinds().at(-1)).toEqual({ kind: "done", folders: 1, notes: 3 });
   });
 
   test("ignores jobs of other kinds", async () => {
@@ -202,7 +212,7 @@ describe("keypoint run", () => {
       expect(bodies).toHaveLength(1);
       if (useWebSearch) expect(bodies[0].tools?.[0]?.name).toBe("web_search");
       else expect(bodies[0].tools).toBeUndefined();
-      expect(JSON.stringify(bodies[0].messages)).toContain("from the PDF: The paper discusses Fusion.");
+      expect(JSON.stringify(bodies[0].messages)).toContain("A paper about stars.");
       expect(u.kinds().at(-1)).toEqual({ kind: "done", folders: 1, notes: 3 });
     }
   });

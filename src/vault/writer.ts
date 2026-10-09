@@ -177,7 +177,7 @@ export class VaultWriter {
       const sentences = point.detail.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s !== "");
       const title = await this.writeUniqueNote(folder, point.name, new Set(), () =>
         renderNote(
-          { title: point.name, summary, keyPoints: sentences, plainWords: overview.plainWords || point.detail },
+          { title: point.name, summary, keyPoints: sentences, plainWords: point.detail },
           { topic: stem, subtopic: point.name, date, source: pdfName, pages: point.pages },
         ),
       );

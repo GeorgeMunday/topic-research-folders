@@ -292,6 +292,8 @@ describe("run", () => {
     expect(c.merge.mock.calls[0][1].map((r: PdfOverview) => r.summary)).toEqual(["sum0", "sum50", "sum100"]);
     const md = c.vault.files.get("Topic/Sources/big - Overview.md")!;
     expect(md).toContain("sum0 sum50 sum100");
+    // Key point jobs carry the merged overview's summary, so Stage 2 knows what the whole PDF is about.
+    expect(c.enqueued.map((j) => j.kind === "keypoint" && j.docSummary)).toEqual(["sum0 sum50 sum100", "sum0 sum50 sum100", "sum0 sum50 sum100"]);
     expect(md).toContain("Point 50 matters (p. 51)");
     expect(c.infos).toEqual([]);
   });
@@ -321,10 +323,10 @@ describe("run", () => {
     c.overview.mockResolvedValue({ ...ov("One", "Two", "Three", "Four", "Five"), keyPoints: [kp("One", 1, "Anatomy"), kp("Two"), kp("Three"), kp("Four"), kp("Five")] });
     await c.flow.run(job("Topic/a.pdf"), noSignal, noCp);
     expect(c.enqueued).toEqual([
-      { id: "keypoint:Topic/Anatomy/One.md", kind: "keypoint", path: "Topic/Anatomy/One.md", folder: "Topic/Anatomy", pdfName: "a.pdf", topic: "a", parents: ["Topic"], point: kp("One", 1, "Anatomy") },
+      { id: "keypoint:Topic/Anatomy/One.md", kind: "keypoint", path: "Topic/Anatomy/One.md", folder: "Topic/Anatomy", pdfName: "a.pdf", topic: "a", parents: ["Topic"], docSummary: "sum", point: kp("One", 1, "Anatomy") },
       ...["Two", "Three", "Four", "Five"].map((n) => ({
         id: `keypoint:Topic/From PDFs/${n}/${n}.md`, kind: "keypoint", path: `Topic/From PDFs/${n}/${n}.md`, folder: `Topic/From PDFs/${n}`,
-        pdfName: "a.pdf", topic: "a", parents: ["Topic"], point: kp(n),
+        pdfName: "a.pdf", topic: "a", parents: ["Topic"], docSummary: "sum", point: kp(n),
       })),
     ]);
     const two = setup();
@@ -362,7 +364,7 @@ describe("run", () => {
     expect(c.vault.files.get("Docs/paper/paper - Overview.md")).toContain("research-root: true");
     expect(c.enqueued).toEqual([{
       id: "keypoint:Docs/paper/Alpha/Alpha.md", kind: "keypoint", path: "Docs/paper/Alpha/Alpha.md", folder: "Docs/paper/Alpha",
-      pdfName: "paper.pdf", topic: "paper", parents: [], point: kp("Alpha", 1),
+      pdfName: "paper.pdf", topic: "paper", parents: [], docSummary: "sum", point: kp("Alpha", 1),
     }]);
     expect(await c.writer.isResearchRoot("Docs/paper")).toBe(true);
 

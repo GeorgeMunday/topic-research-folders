@@ -59,11 +59,13 @@ export class KeypointFlow {
     }
     if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
     emit({ kind: "step", text: `Researching "${point.name}" (from ${job.pdfName})…` });
+    // What the whole PDF is about (jobs saved before this field existed have none).
+    const docSummary = (job.docSummary ?? "").trim();
     try {
       const notes = await client.notes(
         job.topic,
         job.parents,
-        { name: point.name, why: `${point.text} — from the PDF: ${point.detail}` },
+        { name: point.name, why: `${point.text} — from the PDF "${job.pdfName}"${docSummary ? ` (${docSummary})` : ""}: ${point.detail}` },
         settings().notesPerSubfolder,
       );
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }

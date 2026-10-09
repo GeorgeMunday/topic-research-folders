@@ -15,7 +15,7 @@ export type Job =
    */
   | { id: string; kind: "pdf"; path: string; resume?: boolean; triggeredAt?: number }
   /** Stage 2: research one key point. `path` is its entry note (unique); the notes go into `folder`. */
-  | { id: string; kind: "keypoint"; path: string; folder: string; pdfName: string; topic: string; parents: string[]; point: KeyPoint };
+  | { id: string; kind: "keypoint"; path: string; folder: string; pdfName: string; topic: string; parents: string[]; point: KeyPoint; docSummary?: string };
 export type Progress =
   | { kind: "step"; text: string }
   | { kind: "outline"; outline: Outline }

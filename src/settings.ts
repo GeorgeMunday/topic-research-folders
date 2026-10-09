@@ -85,7 +85,8 @@ function validJob(j: unknown): boolean {
       && Array.isArray(j.parents) && j.parents.every((x) => typeof x === "string")
       && isObj(pt) && typeof pt.name === "string" && typeof pt.text === "string"
       && typeof pt.detail === "string" && typeof pt.pages === "string"
-      && (pt.subfolder === undefined || typeof pt.subfolder === "string");
+      && (pt.subfolder === undefined || typeof pt.subfolder === "string")
+      && (j.docSummary === undefined || typeof j.docSummary === "string");
   }
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;

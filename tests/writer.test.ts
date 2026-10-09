@@ -249,6 +249,9 @@ describe("writePdfOverview outside a research root", () => {
     expect(entry).toContain("- The paper explains Fusion.\n- It gives an example.");
     expect(entry).toContain('source: "[[paper.pdf]]"');
     expect(entry).toContain('pages: "2"');
+    // "In plain words" is what the PDF says about this key point, not the document-level text.
+    expect(entry).toContain("## In plain words\nThe paper explains Fusion. It gives an example.\n");
+    expect(entry).not.toContain("Stars are big hot balls.");
     expect(entry).toContain("## Questions & Answers");
     expect(entry).not.toContain("research-root");
   });

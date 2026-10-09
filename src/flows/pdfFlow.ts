@@ -267,7 +267,7 @@ export class PdfFlow {
       for (const entry of written.entries) {
         enqueue({
           id: `keypoint:${entry.entryPath}`, kind: "keypoint", path: entry.entryPath, folder: entry.folder,
-          pdfName: file, topic: stem, parents: [...parents], point: entry.point,
+          pdfName: file, topic: stem, parents: [...parents], docSummary: overview.summary, point: entry.point,
         });
       }
       // The jobs are queued: a failure to record the hash must not retry the run (it would duplicate them).

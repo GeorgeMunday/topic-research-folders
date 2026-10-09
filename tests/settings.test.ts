@@ -204,3 +204,11 @@ test("mergeData keeps valid keypoint jobs and drops malformed ones", () => {
   ];
   expect(mergeData({ jobs: [good, withSub, ...bad] }).jobs).toEqual([good, withSub]);
 });
+
+test("keypoint jobs keep a string docSummary; a wrong-typed one drops the job; a missing one (older data) is kept", () => {
+  const point = { name: "Big idea", text: "It matters (p. 3)", detail: "d", pages: "3" };
+  const base = { id: "k", kind: "keypoint", path: "R/B.md", folder: "R", pdfName: "p.pdf", topic: "p", parents: [], point };
+  const withSummary = { ...base, docSummary: "About stars." };
+  expect(mergeData({ jobs: [withSummary, { ...base, id: "k2", path: "R/C.md", docSummary: 5 }, { ...base, id: "k3", path: "R/D.md" }] }).jobs)
+    .toEqual([withSummary, { ...base, id: "k3", path: "R/D.md" }]);
+});
