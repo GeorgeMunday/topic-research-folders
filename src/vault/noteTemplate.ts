@@ -1,4 +1,4 @@
-import type { NoteContent, Outline } from "../types";
+import type { KeyPoint, NoteContent, Outline, PdfOverview } from "../types";
 
 // Collapse any run of whitespace (including line breaks) to one space, then trim.
 function oneLine(value: string): string {
@@ -125,6 +125,46 @@ export function renderSourceSummary(
     "## Extracted notes",
     "",
     ...sections,
+    "",
+    ...QA_BLOCK,
+  ];
+  return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
+}
+
+/** The PDF overview (Stage 1): one bullet per key point linking its entry note; never padded. */
+export function renderPdfOverview(
+  o: { pdfName: string; overview: PdfOverview; links: { point: KeyPoint; target: string }[]; asRoot: boolean },
+  date: string,
+): string {
+  const stem = o.pdfName.replace(/\.pdf$/i, "");
+  const frontmatter = [
+    "---",
+    `topic: ${yamlString(stem)}`,
+    `subtopic: ${yamlString("Overview")}`,
+    `created: ${date}`,
+    `source: ${yamlString(`[[${o.pdfName}]]`)}`,
+  ];
+  if (o.asRoot) frontmatter.push("research-root: true");
+  frontmatter.push("tags: [research]", "---");
+
+  // `|` and brackets would end the wikilink early.
+  const alias = (s: string) => oneLine(s.replace(/[|[\]]/g, " "));
+  const bullets = o.links.map((l) => `- ${oneLine(l.point.text)} → [[${oneLine(l.target)}|${alias(l.point.name)}]]`);
+
+  const body = [
+    `# ${oneLine(stem)} - Overview`,
+    "",
+    `> ${oneLine(o.overview.summary)}`,
+    "",
+    "## Key points",
+    ...bullets,
+    "",
+    "## In plain words",
+    oneLine(o.overview.plainWords),
+    "",
+    "## My notes",
+    "",
+    "- ",
     "",
     ...QA_BLOCK,
   ];

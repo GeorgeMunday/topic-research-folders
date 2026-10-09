@@ -1,6 +1,6 @@
 import { sanitiseName, uniqueName } from "../names";
-import { renderNote, renderOverview, renderSourceSummary } from "./noteTemplate";
-import type { Outline, PdfExtraction, SubfolderNotes } from "../types";
+import { renderNote, renderOverview, renderPdfOverview, renderSourceSummary } from "./noteTemplate";
+import type { KeyPoint, NoteContent, Outline, PdfExtraction, PdfOverview, SubfolderNotes } from "../types";
 
 export interface VaultLike {
   exists(path: string): boolean;
@@ -171,6 +171,79 @@ export class VaultWriter {
       renderSourceSummary(pdfName, topic, ex.summary, created, date),
     );
     return created;
+  }
+
+  /**
+   * Stage 1 output. `asRoot`: `container` is created (collision-safe) next to the PDF and becomes a research
+   * root holding the marked overview and one folder per key point. Otherwise `container` is the research root:
+   * the overview goes to `Sources` (no marker) and each key point to its matching existing subfolder or to
+   * `From PDFs/<name>`. Every key point gets an entry note, so the overview's links resolve right away.
+   */
+  async writePdfOverview(args: {
+    container: string;
+    asRoot: boolean;
+    pdfName: string;
+    overview: PdfOverview;
+    existingSubfolders: string[];
+    date: string;
+  }): Promise<{ overviewPath: string; entries: { folder: string; entryPath: string; point: KeyPoint }[] }> {
+    const { asRoot, pdfName, overview, date } = args;
+    const stem = sanitiseName(pdfName.replace(/\.pdf$/i, ""));
+    let container: string;
+    if (asRoot) {
+      const i = args.container.lastIndexOf("/");
+      const parent = await this.ensureFolder(i >= 0 ? args.container.slice(0, i) : "");
+      const name = uniqueName(sanitiseName(args.container.slice(i + 1)), (c) => this.taken(parent, c));
+      container = join(parent, name);
+      await this.makeFolder(container);
+    } else {
+      container = await this.ensureFolder(args.container);
+    }
+    const existing = new Map(args.existingSubfolders.map((n) => [n.toLowerCase(), n]));
+    const entries: { folder: string; entryPath: string; point: KeyPoint }[] = [];
+    for (const point of overview.keyPoints) {
+      const name = sanitiseName(point.name);
+      const match = !asRoot && point.subfolder ? existing.get(point.subfolder.toLowerCase()) : undefined;
+      let folder: string;
+      if (match !== undefined) {
+        folder = join(container, match);
+      } else {
+        const parent = asRoot ? container : await this.ensureFolder(join(container, "From PDFs"));
+        folder = join(parent, uniqueName(name, (c) => this.taken(parent, c)));
+        await this.makeFolder(folder);
+      }
+      const summary = point.text.replace(/\s*\((?:pp?\.|pages?)\s*[^)]*\)\s*\.?\s*$/i, "").trim();
+      const sentences = point.detail.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s !== "");
+      const title = await this.writeUniqueNote(folder, point.name, new Set(), () =>
+        renderNote(
+          { title: point.name, summary, keyPoints: sentences, plainWords: overview.plainWords || point.detail },
+          { topic: stem, subtopic: point.name, date, source: pdfName, pages: point.pages },
+        ),
+      );
+      entries.push({ folder, entryPath: join(folder, `${title}.md`), point });
+    }
+    const target = asRoot ? container : await this.ensureFolder(join(container, "Sources"));
+    const overviewName = uniqueName(`${stem} - Overview`, (c) => this.taken(target, `${c}.md`));
+    const overviewPath = join(target, `${overviewName}.md`);
+    const links = entries.map((e) => ({ point: e.point, target: e.entryPath.slice(0, -3) }));
+    await this.vault.createFile(overviewPath, renderPdfOverview({ pdfName, overview, links, asRoot }, date));
+    return { overviewPath, entries };
+  }
+
+  /** Stage 2: the researched notes of one key point, written into its existing folder (never overwriting). */
+  async writeKeypointNotes(
+    folder: string,
+    topic: string,
+    subtopic: string,
+    notes: NoteContent[],
+    date: string,
+  ): Promise<{ noteTitles: string[] }> {
+    const used = new Set<string>();
+    const noteTitles: string[] = [];
+    for (const note of notes) {
+      noteTitles.push(await this.writeUniqueNote(folder, note.title, used, () => renderNote(note, { topic, subtopic, date })));
+    }
+    return { noteTitles };
   }
 
   async findResearchRoot(path: string): Promise<{ root: string; topic: string; parents: string[] } | null> {

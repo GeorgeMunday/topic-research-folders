@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { renderNote, renderOverview, renderSourceSummary } from "../src/vault/noteTemplate";
+import { renderNote, renderOverview, renderPdfOverview, renderSourceSummary } from "../src/vault/noteTemplate";
 import type { NoteContent } from "../src/types";
 
 const note: NoteContent = { title: "Event horizon", summary: "The point of no return.",
@@ -113,4 +113,59 @@ test("source summary uses full paths when folder is given, bare titles otherwise
   ], "2026-10-08");
   expect(md).toContain("[[T/A/X|X]]");
   expect(md).toContain("[[Y]]");
+});
+
+// --- PDF overview (item 10) ---
+const kp = (name: string, page: number) => ({ name, text: `${name} matters (p. ${page})`, detail: "d", pages: String(page) });
+const pdfOv = { summary: "A paper.", plainWords: "Plain\nwords.", keyPoints: [kp("Fusion", 2), kp("Gravity", 5)] };
+
+test("renderPdfOverview: the normal template with one bullet per key point linking its entry note", () => {
+  const md = renderPdfOverview({
+    pdfName: "paper.pdf", overview: pdfOv, asRoot: true,
+    links: [{ point: kp("Fusion", 2), target: "In/paper/Fusion/Fusion" }, { point: kp("Gravity", 5), target: "In/paper/Gravity/Gravity" }],
+  }, "2026-10-08");
+  expect(md).toBe(
+`---
+topic: "paper"
+subtopic: "Overview"
+created: 2026-10-08
+source: "[[paper.pdf]]"
+research-root: true
+tags: [research]
+---
+
+# paper - Overview
+
+> A paper.
+
+## Key points
+- Fusion matters (p. 2) → [[In/paper/Fusion/Fusion|Fusion]]
+- Gravity matters (p. 5) → [[In/paper/Gravity/Gravity|Gravity]]
+
+## In plain words
+Plain words.
+
+## My notes
+
+- 
+
+## Questions & Answers
+
+**Q:** 
+**A:** 
+`);
+});
+
+test("renderPdfOverview: no marker inside a root; zero key points leaves the section empty (no placeholder)", () => {
+  const md = renderPdfOverview({ pdfName: "Paper.PDF", overview: { ...pdfOv, keyPoints: [] }, asRoot: false, links: [] }, "2026-10-08");
+  expect(md).not.toContain("research-root");
+  expect(md).toContain('topic: "Paper"');
+  expect(md).toContain("# Paper - Overview");
+  expect(md).toContain("## Key points\n\n## In plain words");
+  expect(md).not.toContain("no distinct key points");
+});
+
+test("renderPdfOverview: an alias cannot break the wikilink", () => {
+  const md = renderPdfOverview({ pdfName: "p.pdf", overview: pdfOv, asRoot: true, links: [{ point: kp("A|B]]x", 1), target: "p/A B x/A B x" }] }, "2026-10-08");
+  expect(md).toContain("→ [[p/A B x/A B x|A B x]]");
 });
