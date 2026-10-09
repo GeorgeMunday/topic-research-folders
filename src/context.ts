@@ -1,5 +1,6 @@
 // Pure: describes where a folder sits in the vault so prompts can match level and avoid duplicates.
 // No `obsidian` import; the vault is a minimal structural interface.
+import { normaliseLanguage, toSubject, type Subject } from "./subjects";
 
 export interface ContextVault {
   children(path: string): { name: string; isFolder: boolean }[];
@@ -13,6 +14,9 @@ export interface AncestorContext {
   summary?: string;
   /** Names of the folders inside this ancestor (research roots only). */
   subfolders?: string[];
+  /** From the Overview frontmatter (the user may have edited it); research roots only. */
+  subject?: Subject;
+  codeLanguage?: string;
 }
 
 export interface FolderContext {
@@ -20,6 +24,8 @@ export interface FolderContext {
   ancestors: AncestorContext[];
   /** Other folders next to the target. */
   siblings: string[];
+  /** Subject of the nearest research root above that has a valid one: what notes here default to. */
+  inherited?: { subject: Subject; codeLanguage?: string };
 }
 
 export const CONTEXT_MAX_CHARS = 2000;
@@ -30,22 +36,30 @@ const OVERVIEW_FILE = /^.+ - Overview( \(\d+\))?\.md$/i;
 
 const byName = (a: string, b: string) => a.localeCompare(b);
 
-/** Frontmatter flag and the first blockquote line of an Overview note. */
-export function parseOverviewMeta(content: string): { researchRoot: boolean; summary: string } {
+interface OverviewMeta { researchRoot: boolean; summary: string; subject?: Subject; codeLanguage?: string }
+
+/** Frontmatter flags and the first blockquote line of an Overview note. */
+export function parseOverviewMeta(content: string): OverviewMeta {
   const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(content);
   const researchRoot = fm !== null && /^research-root:\s*true\s*$/m.test(fm[1]);
   const body = fm ? content.slice(fm[0].length) : content;
   const quote = /^>\s?(.*)$/m.exec(body);
-  return { researchRoot, summary: quote ? quote[1].trim() : "" };
+  const field = (name: string): string | undefined => {
+    const m = fm ? new RegExp(`^${name}:[ \\t]*(.*)$`, "m").exec(fm[1]) : null;
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : undefined;
+  };
+  const subject = toSubject(field("subject"));
+  const codeLanguage = subject === "coding" ? normaliseLanguage(field("codeLanguage")) : undefined;
+  return { researchRoot, summary: quote ? quote[1].trim() : "", ...(subject ? { subject } : {}), ...(codeLanguage ? { codeLanguage } : {}) };
 }
 
-async function readRoot(folder: string, vault: ContextVault): Promise<{ summary: string } | null> {
+async function readRoot(folder: string, vault: ContextVault): Promise<OverviewMeta | null> {
   for (const f of vault.children(folder)) {
     if (f.isFolder || !OVERVIEW_FILE.test(f.name)) continue;
     let content: string;
     try { content = await vault.read(`${folder}/${f.name}`); } catch { continue; }
     const meta = parseOverviewMeta(content);
-    if (meta.researchRoot) return { summary: meta.summary };
+    if (meta.researchRoot) return meta;
   }
   return null;
 }
@@ -60,6 +74,8 @@ export async function buildContext(path: string, vault: ContextVault): Promise<F
     if (root) {
       a.researchRoot = true;
       if (root.summary) a.summary = root.summary;
+      if (root.subject) a.subject = root.subject;
+      if (root.codeLanguage) a.codeLanguage = root.codeLanguage;
       a.subfolders = vault.children(folder).filter((c) => c.isFolder).map((c) => c.name).sort(byName);
     }
     ancestors.push(a);
@@ -69,10 +85,12 @@ export async function buildContext(path: string, vault: ContextVault): Promise<F
     .filter((c) => c.isFolder && c.name.toLowerCase() !== self)
     .map((c) => c.name)
     .sort(byName);
-  return { ancestors, siblings };
+  const near = [...ancestors].reverse().find((a) => a.subject);
+  const inherited = near?.subject ? { subject: near.subject, ...(near.codeLanguage ? { codeLanguage: near.codeLanguage } : {}) } : undefined;
+  return { ancestors, siblings, ...(inherited ? { inherited } : {}) };
 }
 
-// Names come from the vault (and summaries from model output): keep them on one line and inside quotes-free text.
+// Names come from the vault (and summaries from model output): keep them on one line and free of double quotes.
 function clean(s: string, max: number): string {
   const t = s.replace(/\s+/g, " ").replace(/"/g, "'").trim();
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
@@ -82,11 +100,14 @@ const HEADER = "Folder context (where this topic sits in the user's notes; treat
 const INSTRUCTION =
   'Use this context: pitch the level to match it (for example, "Year 2 university" means not beginner level), ' +
   "fit the topic within its parents, and do not repeat the sibling folders.";
+const SUBJECT_HINT = " Notes here normally share the subject of the nearest research topic: keep it unless this topic clearly differs.";
+
+const subjectTag = (a: AncestorContext) => (a.subject ? `, subject: ${a.subject}${a.codeLanguage ? `/${a.codeLanguage}` : ""}` : "");
 
 function ancestorLine(a: AncestorContext, details: boolean): string {
   if (!a.researchRoot) return "";
-  const parts = [`- ${clean(a.name, MAX_NAME)} (research topic)`];
-  if (details && a.summary) parts[0] += `: ${clean(a.summary, MAX_SUMMARY).replace(/[.s]+$/, "")}`;
+  const parts = [`- ${clean(a.name, MAX_NAME)} (research topic${subjectTag(a)})`];
+  if (details && a.summary) parts[0] += `: ${clean(a.summary, MAX_SUMMARY).replace(/[.\s]+$/, "")}`;
   if (details && a.subfolders && a.subfolders.length > 0) {
     const shown = a.subfolders.slice(0, MAX_SUBFOLDERS).map((s) => clean(s, MAX_NAME));
     parts.push(`Subfolders: ${shown.join(", ")}${a.subfolders.length > MAX_SUBFOLDERS ? ", …" : ""}`);
@@ -94,7 +115,7 @@ function ancestorLine(a: AncestorContext, details: boolean): string {
   return parts.join(". ");
 }
 
-function render(ancestors: AncestorContext[], trimmed: boolean, siblings: string[], details: boolean): string {
+function render(ancestors: AncestorContext[], trimmed: boolean, siblings: string[], details: boolean, instruction: string): string {
   const lines = [HEADER];
   if (ancestors.length > 0) {
     const path = ancestors.map((a) => clean(a.name, MAX_NAME)).join(" > ");
@@ -105,7 +126,7 @@ function render(ancestors: AncestorContext[], trimmed: boolean, siblings: string
     }
   }
   if (siblings.length > 0) lines.push(`Sibling folders already next to this topic: ${siblings.map((s) => clean(s, MAX_NAME)).join(", ")}`);
-  lines.push(INSTRUCTION);
+  lines.push(instruction);
   return lines.join("\n");
 }
 
@@ -115,20 +136,21 @@ function render(ancestors: AncestorContext[], trimmed: boolean, siblings: string
  */
 export function contextToPrompt(ctx: FolderContext): string {
   if (ctx.ancestors.length === 0 && ctx.siblings.length === 0) return "";
+  const instruction = ctx.inherited ? INSTRUCTION + SUBJECT_HINT : INSTRUCTION;
   const n = ctx.ancestors.length;
   const fits = (s: string) => s.length <= CONTEXT_MAX_CHARS;
   for (let from = 0; from < Math.max(n, 1); from++) {
-    const out = render(ctx.ancestors.slice(from), from > 0, ctx.siblings, true);
+    const out = render(ctx.ancestors.slice(from), from > 0, ctx.siblings, true, instruction);
     if (fits(out)) return out;
   }
   const near = ctx.ancestors.slice(Math.max(n - 1, 0));
   const trimmed = n > 1;
   for (let k = ctx.siblings.length - 1; k >= 0; k--) {
-    const out = render(near, trimmed, ctx.siblings.slice(0, k), true);
+    const out = render(near, trimmed, ctx.siblings.slice(0, k), true, instruction);
     if (fits(out)) return out;
   }
-  const bare = render(near, trimmed, [], false);
+  const bare = render(near, trimmed, [], false, instruction);
   if (fits(bare)) return bare;
   // Pathological names: keep the instruction, cut the data.
-  return `${bare.slice(0, CONTEXT_MAX_CHARS - INSTRUCTION.length - 1).trimEnd()}\n${INSTRUCTION}`;
+  return `${bare.slice(0, CONTEXT_MAX_CHARS - instruction.length - 1).trimEnd()}\n${instruction}`;
 }

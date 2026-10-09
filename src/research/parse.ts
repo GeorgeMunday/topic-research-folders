@@ -1,4 +1,5 @@
 import type { Outline, NoteContent, SubfolderSuggestion, KeyPoint, PdfOverview } from "../types";
+import { normaliseLanguage, parseExtras, toSubject } from "../subjects";
 
 export class ParseError extends Error {
   constructor(message: string) {
@@ -55,14 +56,24 @@ function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-function parseNote(v: unknown): NoteContent | null {
+function parseNote(v: unknown, subject: string, codeLanguage?: string): NoteContent | null {
   if (!isObj(v)) return null;
   const title = str(v.title);
   if (!title) return null;
   if (!Array.isArray(v.keyPoints)) throw new ParseError(`Note "${title}" is missing keyPoints`);
   const keyPoints = v.keyPoints.filter((k): k is string => typeof k === "string" && k.trim() !== "").map(k => k.trim());
   if (keyPoints.length === 0) throw new ParseError(`Note "${title}" has no key points`);
-  return { title, summary: str(v.summary), keyPoints, plainWords: str(v.plainWords) };
+  const note: NoteContent = { title, summary: str(v.summary), keyPoints, plainWords: str(v.plainWords) };
+  const extras = parseExtras(subject, v.extras, codeLanguage);
+  if (extras) note.extras = extras;
+  return note;
+}
+
+/** The subject and (coding only) language the model named; either may be absent. */
+function parseSubject(data: Record<string, unknown>): { subject?: ReturnType<typeof toSubject>; codeLanguage?: string } {
+  const subject = toSubject(data.subject);
+  const codeLanguage = subject === "coding" ? normaliseLanguage(data.codeLanguage) : undefined;
+  return { ...(subject ? { subject } : {}), ...(codeLanguage ? { codeLanguage } : {}) };
 }
 
 export function parseOutline(text: string, max: number): Outline {
@@ -75,15 +86,15 @@ export function parseOutline(text: string, max: number): Outline {
     if (name) subfolders.push({ name, why: str(s.why) });
   }
   if (subfolders.length === 0) throw new ParseError("Outline has no valid subfolders");
-  return { topic: str(data.topic), summary: str(data.summary), subfolders: subfolders.slice(0, max) };
+  return { topic: str(data.topic), summary: str(data.summary), subfolders: subfolders.slice(0, max), ...parseSubject(data) };
 }
 
-export function parseNotes(text: string, count: number): NoteContent[] {
+export function parseNotes(text: string, count: number, subject = "general", codeLanguage?: string): NoteContent[] {
   const data = extractJson(text);
   if (!isObj(data) || !Array.isArray(data.notes)) throw new ParseError("Response is missing notes");
   const notes: NoteContent[] = [];
   for (const n of data.notes) {
-    const note = parseNote(n);
+    const note = parseNote(n, subject, codeLanguage);
     if (note) notes.push(note);
   }
   if (notes.length === 0) throw new ParseError("Response has no valid notes");
@@ -116,5 +127,5 @@ export function parsePdfOverview(text: string, subfolders: string[]): PdfOvervie
   const summary = str(data.summary);
   // A thin document may genuinely have no distinct key points, but then it must at least be summarised.
   if (keyPoints.length === 0 && !summary) throw new ParseError("Overview has no key points and no summary");
-  return { summary, plainWords: str(data.plainWords), keyPoints };
+  return { summary, plainWords: str(data.plainWords), keyPoints, ...parseSubject(data) };
 }

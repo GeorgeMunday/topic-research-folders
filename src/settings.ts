@@ -3,6 +3,7 @@ import type { App, Plugin } from "obsidian";
 import type { Job, Outline, PendingReview } from "./types";
 import { modelOptions, pickerView } from "./models";
 import type { ModelCache, ModelCatalog, ModelInfo } from "./models";
+import { isSubject } from "./subjects";
 
 export interface Settings {
   apiKey: string;
@@ -73,6 +74,11 @@ const RANGES: Record<string, [number, number]> = {
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
+// A saved subject must be one we know (and the language a string); anything else drops the job rather than mislead a prompt.
+function validSubject(j: Record<string, unknown>): boolean {
+  return (j.subject === undefined || isSubject(j.subject)) && (j.codeLanguage === undefined || typeof j.codeLanguage === "string");
+}
+
 function validJob(j: unknown): boolean {
   if (!isObj(j) || typeof j.id !== "string" || typeof j.path !== "string") return false;
   if (j.kind === "pdf") {
@@ -86,11 +92,13 @@ function validJob(j: unknown): boolean {
       && isObj(pt) && typeof pt.name === "string" && typeof pt.text === "string"
       && typeof pt.detail === "string" && typeof pt.pages === "string"
       && (pt.subfolder === undefined || typeof pt.subfolder === "string")
-      && (j.docSummary === undefined || typeof j.docSummary === "string");
+      && (j.docSummary === undefined || typeof j.docSummary === "string")
+      && validSubject(j);
   }
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
   if (j.summary !== undefined && typeof j.summary !== "string") return false;
+  if (!validSubject(j)) return false;
   if (j.approved === undefined) return true;
   return Array.isArray(j.approved) && j.approved.every((a) => isObj(a) && typeof a.name === "string");
 }
@@ -105,6 +113,10 @@ function validPending(p: unknown): PendingReview | null {
     summary: o.summary,
     subfolders: (o.subfolders as Record<string, unknown>[]).map((s) => ({ name: s.name as string, why: s.why as string })),
   };
+  if (isSubject(o.subject)) {
+    outline.subject = o.subject;
+    if (o.subject === "coding" && typeof o.codeLanguage === "string") outline.codeLanguage = o.codeLanguage;
+  }
   return { path: p.path, outline };
 }
 

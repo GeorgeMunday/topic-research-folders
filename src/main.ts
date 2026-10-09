@@ -144,7 +144,10 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       },
       {
         startApproved: (path, approved, outline) =>
-          queue.add({ id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary }),
+          queue.add({
+            id: `research:${path}`, kind: "research", path, approved, done: [], summary: outline.summary,
+            ...(outline.subject ? { subject: outline.subject } : {}), ...(outline.codeLanguage ? { codeLanguage: outline.codeLanguage } : {}),
+          }),
         pathExists: (path) => vault.getAbstractFileByPath(path) != null,
         // The queue side of "Cancel all" (command and status bar menu); the hub clears its own state after it.
         cancelAllJobs: () => {

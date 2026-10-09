@@ -84,7 +84,7 @@ describe("keypoint run", () => {
       "Stars paper", ["Space"],
       { name: "Fusion", why: "Fusion is central (p. 3) — from the PDF \"paper.pdf\" (A paper about stars.): The paper discusses Fusion." },
       4,
-      { context: expect.stringContaining("Path: Stars") },
+      { context: expect.stringContaining("Path: Stars"), subject: "general", codeLanguage: undefined },
     ]);
     for (const i of [1, 2, 3, 4]) expect(u.v.files.get(`Stars/Fusion/Fusion ${i}.md`)).toContain('subtopic: "Fusion"');
     expect(u.v.files.get("Stars/Fusion/Fusion 1.md")).toContain('topic: "Stars paper"');
