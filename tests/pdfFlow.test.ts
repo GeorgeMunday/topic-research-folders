@@ -67,7 +67,7 @@ beforeAll(async () => {
 });
 
 const baseSettings: Settings = {
-  apiKey: "k", model: "m", modelChosen: false, useWebSearch: false, triggerSuffix: " research", stripSuffix: true,
+  apiKey: "k", model: "m", modelChosen: false, useWebSearch: false, triggerSuffix: "+", stripSuffix: true,
   maxSubfolders: 5, notesPerSubfolder: 3, maxDepth: 3, maxConcurrent: 2, maxRetries: 3,
   processPdfs: true, pdfPagesPerChunk: 50, confirmAbovePages: 200,
 };
@@ -80,7 +80,7 @@ interface Ctx {
   flow: PdfFlow; vault: MemVault; files: Map<string, ArrayBuffer>;
   enqueued: Job[]; infos: string[]; errors: string[]; confirms: string[];
   processed: Record<string, { path: string; date: string }>;
-  marked: string[]; order: string[]; timers: Array<() => void>;
+  marked: string[]; order: string[]; renames: [string, string][];
   extract: ReturnType<typeof vi.fn>; settings: Settings;
   confirmAnswer: { value: boolean | Promise<boolean> };
   readCalls: { active: number; max: number; total: number };
@@ -103,7 +103,7 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
   const confirms: string[] = [];
   const processed: Record<string, { path: string; date: string }> = {};
   const marked: string[] = [];
-  const timers: Array<() => void> = [];
+  const renames: [string, string][] = [];
   const settings = { ...baseSettings, ...over };
   const extract = vi.fn(async (..._a: any[]): Promise<PdfExtraction> => ({ summary: "sum", notes: [note("Anatomy", "N", ["a"], "1")] }));
   const confirmAnswer = { value: true as boolean | Promise<boolean> };
@@ -127,14 +127,21 @@ function setup(over: Partial<Settings> = {}, ready = true): Ctx {
     enqueue: (j) => { enqueued.push(j); return true; },
     processed: () => processed,
     markProcessed: async (h, p) => { order.push("mark"); marked.push(h); processed[h] = { path: p, date: "d" }; },
-    setTimer: (fn) => { timers.push(fn); },
+    rename: async (from, to) => {
+      renames.push([from, to]);
+      const b = files.get(from);
+      if (b) { files.delete(from); files.set(to, b); }
+      const v = vault.files.get(from);
+      if (v !== undefined) { vault.files.delete(from); vault.files.set(to, v); }
+    },
   };
   const flow = new PdfFlow(deps);
   if (ready) flow.markReady();
-  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, timers, extract, settings, confirmAnswer, readCalls, client, writer, slow };
+  return { flow, vault, files, enqueued, infos, errors, confirms, processed, marked, order, renames, extract, settings, confirmAnswer, readCalls, client, writer, slow };
 }
 
-const fire = async (c: Ctx) => { c.timers.at(-1)!(); await c.flow.idle(); };
+/** Puts a PDF into the vault (listed as a sibling) and makes its bytes readable. */
+const drop = (c: Ctx, path: string, bytes: ArrayBuffer) => { c.files.set(path, bytes); c.vault.files.set(path, "%PDF"); };
 const noSignal = { cancelled: false };
 const noCp = async () => {};
 const job = (path: string): Job => ({ id: `pdf:${path}`, kind: "pdf", path });
@@ -142,23 +149,121 @@ const job = (path: string): Job => ({ id: `pdf:${path}`, kind: "pdf", path });
 describe("plain PDFs are never processed", () => {
   test("a pdf created inside a research root without the suffix is ignored", async () => {
     const c = setup();
-    c.files.set("Topic/a.pdf", pdf1);
+    drop(c, "Topic/a.pdf", pdf1);
     await c.flow.onFileEvent("Topic/a.pdf");
-    await c.flow.idle();
     expect(c.readCalls.total).toBe(0);
-    expect(c.timers.length).toBe(0);
+    expect(c.renames).toEqual([]);
     expect(c.enqueued).toEqual([]);
     expect([...c.errors, ...c.infos, ...c.confirms]).toEqual([]);
   });
 });
 
-describe("events", () => {
-  test("ignores pdf events before ready", async () => {
-    const c = setup({}, false);
-    c.files.set("Topic/a.pdf", pdf1);
-    await c.flow.onFileEvent("Topic/a.pdf");
-    expect(c.timers.length).toBe(0);
+describe("suffix trigger on the PDF", () => {
+  test("onFileEvent: ignores events before ready; ignores non-triggers; for paper+.pdf renames to paper.pdf and enqueues a pdf job for the clean path", async () => {
+    const early = setup({}, false);
+    drop(early, "Topic/paper+.pdf", pdf1);
+    await early.flow.onFileEvent("Topic/paper+.pdf");
+    expect(early.readCalls.total).toBe(0);
+    expect(early.renames).toEqual([]);
+    expect(early.enqueued).toEqual([]);
+
+    const c = setup();
+    drop(c, "Topic/notes.txt+", pdf1);
+    drop(c, "Topic/plain.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/notes.txt+");
+    await c.flow.onFileEvent("Topic/plain.pdf");
     expect(c.readCalls.total).toBe(0);
+    expect(c.enqueued).toEqual([]);
+
+    drop(c, "Topic/paper+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/paper+.pdf");
+    expect(c.renames).toEqual([["Topic/paper+.pdf", "Topic/paper.pdf"]]);
+    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    expect([...c.errors, ...c.infos, ...c.confirms]).toEqual([]);
+  });
+
+  test("accepts paper.pdf+ too", async () => {
+    const c = setup();
+    drop(c, "Topic/paper.pdf+", pdf1);
+    await c.flow.onFileEvent("Topic/paper.pdf+");
+    expect(c.renames).toEqual([["Topic/paper.pdf+", "Topic/paper.pdf"]]);
+    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+  });
+
+  test("a pdf at the vault root and outside any research root is still triggered", async () => {
+    const c = setup();
+    drop(c, "paper+.PDF", pdf1);
+    await c.flow.onFileEvent("paper+.PDF");
+    expect(c.renames).toEqual([["paper+.PDF", "paper.PDF"]]);
+    expect(c.enqueued).toEqual([job("paper.PDF")]);
+  });
+
+  test("stripSuffix off: no rename, job for the original path", async () => {
+    const c = setup({ stripSuffix: false });
+    drop(c, "Topic/paper+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/paper+.pdf");
+    expect(c.renames).toEqual([]);
+    expect(c.enqueued).toEqual([job("Topic/paper+.pdf")]);
+  });
+
+  test("rename collision -> 'paper (2).pdf'", async () => {
+    const c = setup();
+    drop(c, "Topic/Paper.pdf", pdf3);
+    drop(c, "Topic/paper+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/paper+.pdf");
+    expect(c.renames).toEqual([["Topic/paper+.pdf", "Topic/paper (2).pdf"]]);
+    expect(c.enqueued).toEqual([job("Topic/paper (2).pdf")]);
+    // A folder with the clean name collides as well.
+    c.vault.folders.add("Topic/report.pdf");
+    drop(c, "Topic/report+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/report+.pdf");
+    expect(c.renames.at(-1)).toEqual(["Topic/report+.pdf", "Topic/report (2).pdf"]);
+  });
+
+  test("the rename back to paper.pdf does not retrigger (no suffix) and consumeCreated-style double events enqueue once (dedupe by kind+path)", async () => {
+    const c = setup();
+    drop(c, "Topic/paper+.pdf", pdf1);
+    // create and rename events for the same new file, arriving together
+    await Promise.all([c.flow.onFileEvent("Topic/paper+.pdf"), c.flow.onFileEvent("Topic/paper+.pdf")]);
+    // the rename back fires an event for the clean name
+    await c.flow.onFileEvent("Topic/paper.pdf");
+    // a late duplicate for the old name: the file is gone
+    await c.flow.onFileEvent("Topic/paper+.pdf");
+    expect(c.renames).toEqual([["Topic/paper+.pdf", "Topic/paper.pdf"]]);
+    expect(c.enqueued).toEqual([job("Topic/paper.pdf")]);
+    expect([...c.errors, ...c.infos]).toEqual([]);
+  });
+
+  test("an unreadable or missing file at trigger time is skipped silently", async () => {
+    const c = setup();
+    await c.flow.onFileEvent("Topic/gone+.pdf");
+    c.vault.files.set("Topic/locked+.pdf", "%PDF"); // listed, but reading fails
+    await c.flow.onFileEvent("Topic/locked+.pdf");
+    expect(c.enqueued).toEqual([]);
+    expect(c.renames).toEqual([]);
+    expect([...c.errors, ...c.infos, ...c.confirms]).toEqual([]);
+    // Once readable, the same trigger works (a skipped attempt leaves nothing stuck in flight).
+    c.files.set("Topic/locked+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/locked+.pdf");
+    expect(c.enqueued).toEqual([job("Topic/locked.pdf")]);
+  });
+
+  test("an encrypted PDF is reported with the bare reason through the sink (notify without one) and not enqueued", async () => {
+    const c = setup();
+    const events: [string, Progress, ProgressSource][] = [];
+    (c.flow as any).deps.progress = (p: string, e: Progress, src: ProgressSource) => { events.push([p, e, src]); };
+    drop(c, "Topic/secret+.pdf", encrypted);
+    await c.flow.onFileEvent("Topic/secret+.pdf");
+    expect(c.enqueued).toEqual([]);
+    expect(events.map((x) => [x[0], x[1]])).toEqual([["Topic/secret.pdf", { kind: "failed", error: "the PDF is encrypted" }]]);
+    expect(events[0][2].kind).toBe("pdf");
+    expect(c.errors).toEqual([]);
+
+    const n = setup();
+    drop(n, "Topic/secret+.pdf", encrypted);
+    await n.flow.onFileEvent("Topic/secret+.pdf");
+    expect(n.enqueued).toEqual([]);
+    expect(n.errors).toEqual(["Could not analyse secret.pdf: the PDF is encrypted"]);
   });
 });
 

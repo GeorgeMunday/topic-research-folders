@@ -7,6 +7,8 @@ import type { Notifier } from "./researchFlow";
 import { isRetryable } from "../jobs/backoff";
 import { CANCELLED_MESSAGE, nextRunId, type ProgressSink } from "../progress";
 import { PdfError, inspectPdf, sha256, splitPdf } from "../pdf/chunk";
+import { pdfTriggerName } from "../pdf/trigger";
+import { uniqueName } from "../names";
 
 export interface Confirmer { confirm(message: string): Promise<boolean>; }
 export interface PdfDeps {
@@ -20,19 +22,17 @@ export interface PdfDeps {
   enqueue: (job: Job) => boolean;
   processed: () => Record<string, { path: string; date: string }>;
   markProcessed: (hash: string, path: string) => Promise<void>;
-  setTimer: (fn: () => void, ms: number) => void;
+  /** Renames a vault file (used to strip the trigger suffix). */
+  rename: (from: string, to: string) => Promise<void>;
   progress?: ProgressSink;
 }
 
-interface Entry { path: string; hash: string; pageCount: number; error?: "encrypted" | "unreadable"; }
-
-const DEBOUNCE_MS = 2000;
 const MAX_CHUNK_BYTES = 20_000_000;
 const MAX_KEY_POINTS = 10;
 const RESERVED = new Set(["from pdfs", "sources"]);
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const isPdf = (p: string) => /\.pdf$/i.test(p);
+const parentOf = (p: string) => (p.lastIndexOf("/") >= 0 ? p.slice(0, p.lastIndexOf("/")) : "");
 
 function mergePages(a: string, b: string): string {
   const seen = new Set<string>();
@@ -69,13 +69,9 @@ function mergeExtractions(results: PdfExtraction[]): PdfExtraction {
 
 export class PdfFlow {
   private ready = false;
-  private pending: Entry[] = [];
-  private pendingHashes = new Map<string, Entry>();
-  private active = 0;
   private inFlight = new Set<string>();
-  private eventChain: Promise<unknown> = Promise.resolve();
-  private flushChain: Promise<unknown> = Promise.resolve();
-  private timerGen = 0;
+  // Trigger paths being handled right now: create and rename events for one file can arrive together.
+  private triggering = new Set<string>();
   private lastRun = new Map<string, number>();
   private retryPending = new Set<string>();
   // Completed chunk results per file hash, kept across retry attempts so a retry does not resend them.
@@ -86,19 +82,53 @@ export class PdfFlow {
 
   markReady(): void { this.ready = true; }
 
-  /** Resolves once all queued event work and flushes have settled (used by tests). */
-  async idle(): Promise<void> {
-    for (;;) {
-      const e = this.eventChain;
-      const f = this.flushChain;
-      await Promise.all([e, f]);
-      if (e === this.eventChain && f === this.flushChain) return;
+  /**
+   * Called for every file create/rename (never for folders). Only a trigger name (`paper+.pdf`,
+   * `paper.pdf+`) does anything; everything else returns after a little string work.
+   */
+  async onFileEvent(path: string): Promise<void> {
+    if (!this.ready) return;
+    const t = pdfTriggerName(baseName(path), this.deps.settings().triggerSuffix);
+    if (!t || this.triggering.has(path)) return;
+    this.triggering.add(path);
+    try {
+      await this.trigger(path, t.clean);
+    } catch (e) {
+      this.failAt(path, e instanceof Error ? e.message : "unexpected error");
+    } finally {
+      this.triggering.delete(path);
     }
   }
 
-  /** Plain PDFs are never processed: a PDF event alone starts no work (no reads, no API calls). */
-  async onFileEvent(_path: string): Promise<void> {
-    if (!this.ready) return;
+  private async trigger(path: string, clean: string): Promise<void> {
+    const { readBinary, settings, writer, rename, enqueue } = this.deps;
+    let bytes: ArrayBuffer;
+    // Missing (e.g. a late duplicate event after the rename) or unreadable: nothing to do.
+    try { bytes = await readBinary(path); } catch { return; }
+    let finalPath = path;
+    if (settings().stripSuffix) {
+      const dir = parentOf(path);
+      const taken = new Set(writer.listNames(dir).map((n) => n.toLowerCase()));
+      const ext = clean.slice(-4);
+      const stem = uniqueName(clean.slice(0, -4), (c) => taken.has(`${c}${ext}`.toLowerCase()));
+      finalPath = dir ? `${dir}/${stem}${ext}` : `${stem}${ext}`;
+      await rename(path, finalPath);
+    }
+    try {
+      await inspectPdf(bytes);
+    } catch (e) {
+      this.failAt(finalPath, `the PDF is ${e instanceof PdfError ? e.reason : "unreadable"}`);
+      return;
+    }
+    enqueue({ id: `pdf:${finalPath}`, kind: "pdf", path: finalPath });
+  }
+
+  /** A trigger-time failure: the sink gets a failed event with the bare reason, otherwise a notice. */
+  private failAt(path: string, reason: string): void {
+    try {
+      if (this.deps.progress) this.deps.progress(path, { kind: "failed", error: reason }, { kind: "pdf", resumed: false, runId: nextRunId() });
+      else this.deps.notify.error(`Could not analyse ${baseName(path)}: ${reason}`);
+    } catch { /* ignore */ }
   }
 
   /** Forget cached chunk results for one job path (or all, with no argument), e.g. when a job is dropped. */
@@ -107,70 +137,6 @@ export class PdfFlow {
     const h = this.cacheHashByPath.get(path);
     if (h !== undefined) this.chunkCache.delete(h);
     this.cacheHashByPath.delete(path);
-  }
-
-  private report(e: unknown): void {
-    try { this.deps.notify.error(`PDF analysis problem: ${e instanceof Error ? e.message : "unexpected error"}`); } catch { /* ignore */ }
-  }
-
-  private serial(fn: () => Promise<void>): Promise<void> {
-    this.active++;
-    const p = this.eventChain.then(fn).catch((e) => this.report(e)).then(() => { this.active--; });
-    this.eventChain = p;
-    return p;
-  }
-
-  private async consider(path: string): Promise<void> {
-    const { writer, readBinary, processed } = this.deps;
-    if (!(await writer.findResearchRoot(path))) return;
-    let bytes: ArrayBuffer;
-    try { bytes = await readBinary(path); } catch { return; }
-    const hash = await sha256(bytes);
-    if (processed()[hash] || this.inFlight.has(hash)) return;
-    const dup = this.pendingHashes.get(hash);
-    if (dup) { dup.path = path; return; }
-    const entry: Entry = { path, hash, pageCount: 0 };
-    try {
-      entry.pageCount = (await inspectPdf(bytes)).pageCount;
-    } catch (e) {
-      entry.error = e instanceof PdfError ? e.reason : "unreadable";
-    }
-    this.pending.push(entry);
-    this.pendingHashes.set(hash, entry);
-    this.schedule();
-  }
-
-  private schedule(): void {
-    const gen = ++this.timerGen;
-    this.deps.setTimer(() => {
-      if (gen !== this.timerGen) return;
-      if (this.active > 0) { this.schedule(); return; }
-      this.flushChain = this.flushChain.then(() => this.flush()).catch((e) => this.report(e));
-    }, DEBOUNCE_MS);
-  }
-
-  private async flush(): Promise<void> {
-    const batch = this.pending;
-    this.pending = [];
-    const { notify, confirm, settings, enqueue } = this.deps;
-    try {
-      const good: Entry[] = [];
-      for (const e of batch) {
-        if (e.error) notify.error(`Skipped ${baseName(e.path)}: the PDF is ${e.error}.`);
-        else good.push(e);
-      }
-      if (good.length === 0) return;
-      const total = good.reduce((n, e) => n + e.pageCount, 0);
-      if (total > settings().confirmAbovePages) {
-        const msg = `Analyse ${good.length} PDFs, ${total} pages in total? This sends them all to Claude and can use a lot of API credit.`;
-        let ok = false;
-        try { ok = await confirm.confirm(msg); } catch { ok = false; }
-        if (!ok) return;
-      }
-      for (const e of good) enqueue({ id: `pdf:${e.path}`, kind: "pdf", path: e.path });
-    } finally {
-      for (const e of batch) this.pendingHashes.delete(e.hash);
-    }
   }
 
   endRun(path?: string): void {

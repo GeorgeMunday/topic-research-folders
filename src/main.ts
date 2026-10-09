@@ -23,7 +23,6 @@ import { ConfirmModal } from "./ui/ConfirmModal";
 const ERROR_NOTICE_MS = 10000;
 // Long enough to reach the Review button.
 const ACTION_NOTICE_MS = 20000;
-const isPdfPath = (p: string) => /\.pdf$/i.test(p);
 
 function localDate(): string {
   const d = new Date();
@@ -69,7 +68,6 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     const writer = new VaultWriter(vaultLike);
 
     const openModals = new Set<{ close: () => void }>();
-    const timers = new Set<number>();
     let ready = false;
     const fail = (e: unknown) => { new Notice(`Research problem: ${e instanceof Error ? e.message : "unexpected error"}`, ERROR_NOTICE_MS); };
     const guard = (p: Promise<unknown>) => { p.catch(fail); };
@@ -221,9 +219,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
         this.data.processedPdfs[hash] = { path, date: localDate() };
         await this.persist();
       },
-      setTimer: (fn, ms) => {
-        const id = window.setTimeout(() => { timers.delete(id); fn(); }, ms);
-        timers.add(id);
+      rename: async (from, to) => {
+        const f = vault.getAbstractFileByPath(from);
+        if (f) await this.app.fileManager.renameFile(f, to);
       },
     });
 
@@ -255,19 +253,17 @@ export default class TopicResearchFoldersPlugin extends Plugin {
 
     const onCreated = (f: TAbstractFile) => {
       if (f instanceof TFolder) guard(researchFlow.onFolderEvent(f.path));
-      else if (f instanceof TFile && isPdfPath(f.path) && settings().processPdfs) guard(pdfFlow.onFileEvent(f.path));
+      // Every file: the PDF flow only acts on a trigger name (cheap string check otherwise).
+      else if (f instanceof TFile && settings().processPdfs) guard(pdfFlow.onFileEvent(f.path));
     };
     this.registerEvent(vault.on("create", onCreated));
     // A pending review follows its folder when it is renamed and goes away (quietly) when it is deleted.
     this.registerEvent(vault.on("delete", (f) => { if (f instanceof TFolder) hub.dropPending(f.path); }));
     this.registerEvent(vault.on("rename", (f, oldPath) => {
       if (f instanceof TFolder) hub.renamePending(oldPath, f.path);
-      const d =decideRename({ isFolder: f instanceof TFolder, oldPath, newPath: f.path, processed: this.data.processedPdfs });
+      const d = decideRename({ isFolder: f instanceof TFolder, oldPath, newPath: f.path, suffix: settings().triggerSuffix });
       if (d.action === "folder-event") guard(researchFlow.onFolderEvent(d.path));
-      else if (d.action === "update-processed") {
-        const e = this.data.processedPdfs[d.hash];
-        if (e) { e.path = d.path; guard(this.persist()); }
-      } else if (d.action === "pdf-event" && settings().processPdfs) guard(pdfFlow.onFileEvent(d.path));
+      else if (d.action === "pdf-event" && settings().processPdfs) guard(pdfFlow.onFileEvent(d.path));
     }));
 
     const parentOfActive = (): string | null => {
@@ -320,7 +316,6 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       // Before the modals close: a review closed by unload must not count as a cancel (keeps pendingReviews).
       () => hub.dispose(),
       () => catalog.dispose(),
-      () => { for (const t of timers) window.clearTimeout(t); timers.clear(); },
       () => spinner.stop(),
       () => { for (const m of [...openModals]) m.close(); },
     ];

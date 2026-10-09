@@ -34,6 +34,11 @@ export class VaultWriter {
     return this.created.delete(path);
   }
 
+  /** Names of everything (files and folders) directly inside a folder. */
+  listNames(folder: string): string[] {
+    return this.vault.children(folder).map((c) => c.name);
+  }
+
   listSubfolders(root: string): string[] {
     return this.vault.children(root).filter((c) => c.isFolder).map((c) => c.name);
   }
