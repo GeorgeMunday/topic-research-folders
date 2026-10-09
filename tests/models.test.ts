@@ -159,16 +159,18 @@ describe("ModelCatalog", () => {
     const timers = new Map<number, { fn: () => void; ms: number }>();
     let nextId = 1;
     const saved: ModelCache[] = [];
+    const cleared = { count: 0 };
     const ctl = { key: opts.key ?? KEY, cache: opts.cache ?? null };
     const deps: CatalogDeps = {
       get, apiKey: () => ctl.key, cache: () => ctl.cache,
       saveCache: async (c) => { saved.push(c); ctl.cache = c; },
+      clearCache: async () => { cleared.count++; ctl.cache = null; },
       now: () => NOW,
       setTimer: (fn, ms) => { const id = nextId++; timers.set(id, { fn, ms }); return id; },
       clearTimer: (id) => { timers.delete(id); },
     };
     const catalog = new ModelCatalog(deps);
-    return { catalog, calls, timers, saved, ctl };
+    return { catalog, calls, timers, saved, ctl, cleared };
   }
   const flush = () => new Promise<void>((r) => setTimeout(r, 0));
   const fresh = (): ModelCache => ({ fetchedAt: new Date(NOW - 3_600_000).toISOString(), models: [m("cached")] });
@@ -226,7 +228,7 @@ describe("ModelCatalog", () => {
     const catalog = new ModelCatalog({
       get: () => new Promise((res) => resolvers.push(res)),
       apiKey: () => KEY, cache: () => null,
-      saveCache: async (c) => { saved.push(c); }, now: () => NOW,
+      saveCache: async (c) => { saved.push(c); }, clearCache: async () => {}, now: () => NOW,
       setTimer: () => 1, clearTimer: () => {},
     });
     const p1 = catalog.refresh();
@@ -271,6 +273,105 @@ describe("ModelCatalog", () => {
     expect(s.catalog.state().status).toBe("error");
     expect(s.catalog.state().error).toBe("Could not reach the Anthropic API (offline?): net::ERR_INTERNET_DISCONNECTED");
   });
+
+  test("keyChanged() invalidates an in-flight refresh started with the old key; the new key's refresh wins", async () => {
+    const resolvers: Array<(v: any) => void> = [];
+    const saved: ModelCache[] = [];
+    const timers = new Map<number, () => void>();
+    let nextId = 1;
+    const catalog = new ModelCatalog({
+      get: () => new Promise((res) => resolvers.push(res)),
+      apiKey: () => KEY, cache: () => null,
+      saveCache: async (c) => { saved.push(c); }, clearCache: async () => {}, now: () => NOW,
+      setTimer: (fn) => { const id = nextId++; timers.set(id, fn); return id; },
+      clearTimer: (id) => { timers.delete(id); },
+    });
+    const p1 = catalog.refresh();
+    catalog.keyChanged();
+    resolvers[0](page(["old-account"]));
+    await p1;
+    expect(catalog.state().models).toEqual([]);
+    expect(catalog.state().status).not.toBe("ready");
+    expect(saved).toHaveLength(0);
+    [...timers.values()][0]();
+    resolvers[1](page(["new-account"]));
+    await flush();
+    expect(catalog.state().models.map((x) => x.id)).toEqual(["new-account"]);
+    expect(saved).toHaveLength(1);
+  });
+
+  test("keyChanged() clears the cache; a failed fetch then shows an error with no models, and ensure() requests again", async () => {
+    const s = setup({ cache: fresh(), pages: [{ status: 401, headers: {}, json: { error: { message: "bad" } } }, page(["a"])] });
+    s.catalog.keyChanged();
+    expect(s.cleared.count).toBe(1);
+    [...s.timers.values()][0].fn();
+    await flush();
+    expect(s.catalog.state().status).toBe("error");
+    expect(s.catalog.state().models).toEqual([]);
+    s.catalog.ensure();
+    await flush();
+    expect(s.calls).toHaveLength(2);
+  });
+
+  test("keyChanged() drops in-memory models even if clearCache does not remove them", async () => {
+    const catalog = new ModelCatalog({
+      get: async () => ({ status: 500, headers: {}, json: undefined }),
+      apiKey: () => KEY, cache: () => ({ fetchedAt: new Date(NOW - 1000).toISOString(), models: [m("old")] }),
+      saveCache: async () => {}, clearCache: async () => {}, now: () => NOW,
+      setTimer: () => 1, clearTimer: () => {},
+    });
+    catalog.keyChanged();
+    expect(catalog.state().models).toEqual([]);
+    await catalog.refresh();
+    expect(catalog.state().status).toBe("error");
+    expect(catalog.state().models).toEqual([]);
+    catalog.ensure();
+    expect(catalog.state().status).toBe("loading");
+  });
+
+  test("blank key also clears the cache", () => {
+    const s = setup({ cache: fresh() });
+    s.ctl.key = "";
+    s.catalog.keyChanged();
+    expect(s.cleared.count).toBe(1);
+  });
+
+  test("ensure() does not start a second request while one is in flight", async () => {
+    const s = setup({ cache: stale() });
+    s.catalog.ensure();
+    s.catalog.ensure();
+    await flush();
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("dispose() clears the pending timer and late responses do nothing", async () => {
+    const resolvers: Array<(v: any) => void> = [];
+    const saved: ModelCache[] = [];
+    const timers = new Map<number, () => void>();
+    const catalog = new ModelCatalog({
+      get: () => new Promise((res) => resolvers.push(res)),
+      apiKey: () => KEY, cache: () => null,
+      saveCache: async (c) => { saved.push(c); }, clearCache: async () => {}, now: () => NOW,
+      setTimer: (fn) => { timers.set(1, fn); return 1; },
+      clearTimer: (id) => { timers.delete(id); },
+    });
+    const p = catalog.refresh();
+    catalog.dispose();
+    const before = catalog.state();
+    resolvers[0](page(["late"]));
+    await p;
+    expect(catalog.state()).toBe(before);
+    expect(saved).toHaveLength(0);
+    const c2 = new ModelCatalog({
+      get: async () => page(["x"]), apiKey: () => KEY, cache: () => null,
+      saveCache: async () => {}, clearCache: async () => {}, now: () => NOW,
+      setTimer: (fn) => { timers.set(2, fn); return 2; }, clearTimer: (id) => { timers.delete(id); },
+    });
+    c2.keyChanged();
+    expect(timers.has(2)).toBe(true);
+    c2.dispose();
+    expect(timers.has(2)).toBe(false);
+  });
 });
 
 describe("pickerView", () => {
@@ -299,5 +400,9 @@ describe("pickerView", () => {
     expect(ready.disabled).toBe(false);
     expect(ready.warning).toMatch(/pick another model/i);
     expect(ready.selected).toBe("gone");
+
+    const empty = pickerView({ status: "ready", models: [] }, "x");
+    expect(empty.disabled).toBe(true);
+    expect(empty.hint).toBe("No models available for this API key");
   });
 });

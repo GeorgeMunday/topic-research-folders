@@ -187,6 +187,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       apiKey: () => settings().apiKey,
       cache: () => this.data.modelCache,
       saveCache: async (c) => { this.data.modelCache = c; await this.persist(); },
+      clearCache: async () => { this.data.modelCache = null; await this.persist(); },
       now: Date.now,
       setTimer: (fn, ms) => window.setTimeout(fn, ms),
       clearTimer: (id) => window.clearTimeout(id),
@@ -265,6 +266,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     const resumed = [...this.data.jobs];
     this.stopFns = [
       () => queue.shutdown(),
+      () => catalog.dispose(),
       () => { for (const t of timers) window.clearTimeout(t); timers.clear(); },
       () => { for (const m of [...openModals]) m.close(); },
     ];

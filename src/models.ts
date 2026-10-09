@@ -101,6 +101,7 @@ export interface CatalogDeps {
   apiKey: () => string;
   cache: () => ModelCache | null;
   saveCache: (c: ModelCache) => Promise<void>;
+  clearCache: () => Promise<void>;
   now: () => number;
   setTimer: (fn: () => void, ms: number) => number;
   clearTimer: (id: number) => void;
@@ -117,6 +118,9 @@ export class ModelCatalog {
   private subs = new Set<(s: CatalogState) => void>();
   private gen = 0;
   private timer: number | null = null;
+  private inflight = false;
+  private dropped = false;
+  private disposed = false;
 
   constructor(private deps: CatalogDeps) {
     this.s = this.hasKey() ? { status: "idle", models: deps.cache()?.models ?? [] } : { status: "nokey", models: [] };
@@ -124,7 +128,10 @@ export class ModelCatalog {
 
   private hasKey(): boolean { return this.deps.apiKey().trim() !== ""; }
 
+  private cached(): ModelCache | null { return this.dropped ? null : this.deps.cache(); }
+
   private set(s: CatalogState): void {
+    if (this.disposed) return;
     this.s = s;
     for (const fn of [...this.subs]) fn(s);
   }
@@ -137,31 +144,48 @@ export class ModelCatalog {
   }
 
   ensure(): void {
-    if (!this.hasKey()) { this.gen++; this.set({ status: "nokey", models: [] }); return; }
-    const cache = this.deps.cache();
+    if (!this.hasKey()) { this.gen++; this.inflight = false; this.set({ status: "nokey", models: [] }); return; }
+    if (this.inflight) return;
+    const cache = this.cached();
     if (cache && isCacheFresh(cache, this.deps.now())) { this.set({ status: "ready", models: cache.models }); return; }
     void this.refresh();
   }
 
   async refresh(): Promise<void> {
+    if (this.disposed) return;
     const my = ++this.gen;
-    if (!this.hasKey()) { this.set({ status: "nokey", models: [] }); return; }
-    this.set({ status: "loading", models: this.deps.cache()?.models ?? [] });
+    if (!this.hasKey()) { this.inflight = false; this.set({ status: "nokey", models: [] }); return; }
+    this.inflight = true;
+    this.set({ status: "loading", models: this.cached()?.models ?? [] });
     try {
       const models = await fetchAllModels(this.deps.get, this.deps.apiKey());
       if (my !== this.gen) return;
+      this.inflight = false;
+      this.dropped = false;
       const cache: ModelCache = { fetchedAt: new Date(this.deps.now()).toISOString(), models };
       this.set({ status: "ready", models });
       try { await this.deps.saveCache(cache); } catch { /* cache save failures are ignored */ }
     } catch (e) {
       if (my !== this.gen) return;
-      this.set({ status: "error", models: this.deps.cache()?.models ?? [], error: errorText(e) });
+      this.inflight = false;
+      this.set({ status: "error", models: this.cached()?.models ?? [], error: errorText(e) });
     }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.gen++;
+    if (this.timer !== null) { this.deps.clearTimer(this.timer); this.timer = null; }
   }
 
   keyChanged(): void {
     if (this.timer !== null) { this.deps.clearTimer(this.timer); this.timer = null; }
-    if (!this.hasKey()) { this.gen++; this.set({ status: "nokey", models: [] }); return; }
+    this.gen++;
+    this.inflight = false;
+    this.dropped = true;
+    void this.deps.clearCache().catch(() => { /* ignore */ });
+    if (!this.hasKey()) { this.set({ status: "nokey", models: [] }); return; }
+    this.set({ status: "idle", models: [] });
     this.timer = this.deps.setTimer(() => { this.timer = null; void this.refresh(); }, KEY_DEBOUNCE_MS);
   }
 }
@@ -179,6 +203,9 @@ export function pickerView(state: CatalogState, savedId: string): PickerView {
   }
   if (state.status === "loading") {
     return { disabled: true, spinning: true, options: [{ value: "", label: "Loading models…" }], selected: "" };
+  }
+  if (state.models.length === 0 && state.status === "ready") {
+    return { disabled: true, spinning: false, options: justSaved, selected: savedId, hint: "No models available for this API key" };
   }
   if (state.models.length === 0) {
     return { disabled: true, spinning: false, options: justSaved, selected: savedId, error: state.status === "error" ? state.error : undefined };
