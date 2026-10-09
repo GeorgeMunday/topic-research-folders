@@ -79,6 +79,14 @@ function validJob(j: unknown): boolean {
     return (j.resume === undefined || typeof j.resume === "boolean")
       && (j.triggeredAt === undefined || (typeof j.triggeredAt === "number" && Number.isFinite(j.triggeredAt)));
   }
+  if (j.kind === "keypoint") {
+    const pt = j.point;
+    return typeof j.folder === "string" && typeof j.pdfName === "string" && typeof j.topic === "string"
+      && Array.isArray(j.parents) && j.parents.every((x) => typeof x === "string")
+      && isObj(pt) && typeof pt.name === "string" && typeof pt.text === "string"
+      && typeof pt.detail === "string" && typeof pt.pages === "string"
+      && (pt.subfolder === undefined || typeof pt.subfolder === "string");
+  }
   if (j.kind !== "research") return false;
   if (!Array.isArray(j.done) || !j.done.every((d) => typeof d === "string")) return false;
   if (j.summary !== undefined && typeof j.summary !== "string") return false;

@@ -146,3 +146,44 @@ test("api key absent from error message and String(error)", async () => {
   expect(err.message).not.toContain("test-key-123");
   expect(String(err)).not.toContain("test-key-123");
 });
+
+// --- PDF overview (item 10) ---
+const OVERVIEW = JSON.stringify({ summary: "s", plainWords: "p", keyPoints: [{ name: "Big idea", text: "It matters (p. 3)", detail: "d", pages: "3", subfolder: "anatomy" }] });
+
+test("overviewPdf sends the document block first, no tools, 8192 tokens, offset in the prompt", async () => {
+  const { http, reqs } = fake(ok(OVERVIEW));
+  const res = await new ClaudeClient(http, cfg()).overviewPdf("paper", ["Anatomy"], "QUJD", 50);
+  expect(res.keyPoints[0]).toMatchObject({ name: "Big idea", subfolder: "Anatomy" });
+  const body = JSON.parse(reqs[0].body);
+  expect(body.max_tokens).toBe(8192);
+  expect(body.messages[0].content[0]).toEqual({ type: "document", source: { type: "base64", media_type: "application/pdf", data: "QUJD" } });
+  expect(body.messages[0].content[1].type).toBe("text");
+  expect(body.messages[0].content[1].text).toContain("51");
+  expect(body.tools).toBeUndefined();
+});
+
+test("mergeOverviews sends no document and no tools (text only, 4096 tokens)", async () => {
+  const { http, reqs } = fake(ok(OVERVIEW));
+  const cand = JSON.parse(OVERVIEW);
+  const res = await new ClaudeClient(http, cfg()).mergeOverviews("paper", [cand, cand]);
+  expect(res.keyPoints).toHaveLength(1);
+  const body = JSON.parse(reqs[0].body);
+  expect(body.max_tokens).toBe(4096);
+  expect(body.tools).toBeUndefined();
+  expect(JSON.stringify(body.messages)).not.toContain('"document"');
+  expect(typeof body.messages[0].content).toBe("string");
+  expect(body.messages[0].content).toContain("Big idea");
+});
+
+test("overviewPdf / mergeOverviews: errors map like the other calls, key never leaked", async () => {
+  const { http } = fake({ error: { message: "overloaded" } }, 529, { "retry-after": "3" });
+  const err = await new ClaudeClient(http, cfg()).overviewPdf("paper", [], "QUJD", 0).catch((e) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err.status).toBe(529);
+  expect(err.retryAfterMs).toBe(3000);
+  expect(String(err)).not.toContain("test-key-123");
+  const t = fake({ stop_reason: "max_tokens", content: [{ type: "text", text: '{"a":' }] });
+  await expect(new ClaudeClient(t.http, cfg()).mergeOverviews("paper", [])).rejects.toBeInstanceOf(ParseError);
+  const bad = fake(ok('{"summary":"","keyPoints":[]}'));
+  await expect(new ClaudeClient(bad.http, cfg()).overviewPdf("paper", [], "QUJD", 0)).rejects.toBeInstanceOf(ParseError);
+});

@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { extractJson, parseOutline, parseNotes, parsePdfExtraction, ParseError } from "../src/research/parse";
+import { extractJson, parseOutline, parseNotes, parsePdfExtraction, parsePdfOverview, ParseError } from "../src/research/parse";
 
 test("extracts fenced JSON", () => expect(extractJson('x\n```json\n{"a":1}\n```')).toEqual({ a: 1 }));
 test("extracts balanced object from prose", () => expect(extractJson('Sure! {"a":{"b":"}"}} done')).toEqual({ a: { b: "}" } }));
@@ -42,3 +42,51 @@ test("skips brace prose before real JSON", () =>
   expect(extractJson('Use {like this} then {"a":2}')).toEqual({ a: 2 }));
 test("fenced JSON preferred over earlier prose object", () =>
   expect(extractJson('Example {"x":0}\n```json\n{"a":1}\n```')).toEqual({ a: 1 }));
+
+// --- PDF overview (item 10) ---
+const kp = (i: number, extra: Record<string, unknown> = {}) =>
+  ({ name: `Point ${i}`, text: `Idea number ${i} matters (p. ${i})`, detail: `The paper says ${i}.`, pages: `${i}`, ...extra });
+const ov = (points: unknown[], over: Record<string, unknown> = {}) =>
+  JSON.stringify({ summary: "A paper about things.", plainWords: "Simple words.", keyPoints: points, ...over });
+
+test("parsePdfOverview: 5 points kept; 7 points capped to 5; 3 points stay 3 (no padding)", () => {
+  const five = parsePdfOverview(ov([1, 2, 3, 4, 5].map((i) => kp(i))), []);
+  expect(five.keyPoints.map((p) => p.name)).toEqual(["Point 1", "Point 2", "Point 3", "Point 4", "Point 5"]);
+  expect(five).toMatchObject({ summary: "A paper about things.", plainWords: "Simple words." });
+  expect(five.keyPoints[0]).toEqual({ name: "Point 1", text: "Idea number 1 matters (p. 1)", detail: "The paper says 1.", pages: "1" });
+  const seven = parsePdfOverview(ov([1, 2, 3, 4, 5, 6, 7].map((i) => kp(i))), []);
+  expect(seven.keyPoints.map((p) => p.name)).toEqual(["Point 1", "Point 2", "Point 3", "Point 4", "Point 5"]);
+  expect(parsePdfOverview(ov([1, 2, 3].map((i) => kp(i))), []).keyPoints).toHaveLength(3);
+});
+
+test("parsePdfOverview: names trimmed to 5 words; points without name or text dropped; pages coerced to string", () => {
+  const r = parsePdfOverview(ov([
+    kp(1, { name: "  One two three four five six seven " }),
+    kp(2, { name: " " }),
+    kp(3, { text: "" }),
+    kp(4, { pages: 12 }),
+    "junk",
+  ]), []);
+  expect(r.keyPoints.map((p) => p.name)).toEqual(["One two three four five", "Point 4"]);
+  expect(r.keyPoints[1].pages).toBe("12");
+});
+
+test("parsePdfOverview: subfolder matched case-insensitively to the canonical name, unknown dropped", () => {
+  const r = parsePdfOverview(ov([kp(1, { subfolder: "anatomy" }), kp(2, { subfolder: "Jets" }), kp(3)]), ["Anatomy", "History"]);
+  expect(r.keyPoints[0].subfolder).toBe("Anatomy");
+  expect(r.keyPoints[1]).not.toHaveProperty("subfolder");
+  expect(r.keyPoints[2]).not.toHaveProperty("subfolder");
+});
+
+test("parsePdfOverview: a thin document with a summary and no key points is fine", () => {
+  const r = parsePdfOverview(ov([]), []);
+  expect(r.keyPoints).toEqual([]);
+  expect(r.summary).toBe("A paper about things.");
+});
+
+test("parsePdfOverview: ParseError for no JSON, missing keyPoints, or no key points and no summary", () => {
+  expect(() => parsePdfOverview("nothing", [])).toThrow(ParseError);
+  expect(() => parsePdfOverview('{"summary":"s"}', [])).toThrow(ParseError);
+  expect(() => parsePdfOverview(ov([], { summary: " " }), [])).toThrow(ParseError);
+  expect(() => parsePdfOverview(ov([kp(1, { name: "" })], { summary: "" }), [])).toThrow(ParseError);
+});

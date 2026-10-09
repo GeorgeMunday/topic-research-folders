@@ -1,4 +1,4 @@
-import type { Outline, NoteContent, PdfExtraction, ExtractedNote, SubfolderSuggestion } from "../types";
+import type { Outline, NoteContent, PdfExtraction, ExtractedNote, SubfolderSuggestion, KeyPoint, PdfOverview } from "../types";
 
 export class ParseError extends Error {
   constructor(message: string) {
@@ -104,4 +104,30 @@ export function parsePdfExtraction(text: string, subfolders: string[]): PdfExtra
   }
   if (notes.length === 0) throw new ParseError("Extraction has no valid notes");
   return { summary: str(data.summary), notes };
+}
+
+const MAX_KEY_POINTS = 5;
+const MAX_NAME_WORDS = 5;
+
+export function parsePdfOverview(text: string, subfolders: string[]): PdfOverview {
+  const data = extractJson(text);
+  if (!isObj(data) || !Array.isArray(data.keyPoints)) throw new ParseError("Overview is missing keyPoints");
+  const canonical = new Map(subfolders.map((s) => [s.toLowerCase(), s]));
+  const keyPoints: KeyPoint[] = [];
+  for (const k of data.keyPoints) {
+    if (!isObj(k)) continue;
+    const name = str(k.name).split(/\s+/).filter((w) => w !== "").slice(0, MAX_NAME_WORDS).join(" ");
+    const pointText = str(k.text);
+    if (!name || !pointText) continue;
+    const pages = typeof k.pages === "number" && Number.isFinite(k.pages) ? String(k.pages) : str(k.pages);
+    const point: KeyPoint = { name, text: pointText, detail: str(k.detail), pages };
+    const sub = canonical.get(str(k.subfolder).toLowerCase());
+    if (sub !== undefined && str(k.subfolder) !== "") point.subfolder = sub;
+    keyPoints.push(point);
+    if (keyPoints.length === MAX_KEY_POINTS) break;
+  }
+  const summary = str(data.summary);
+  // A thin document may genuinely have no distinct key points, but then it must at least be summarised.
+  if (keyPoints.length === 0 && !summary) throw new ParseError("Overview has no key points and no summary");
+  return { summary, plainWords: str(data.plainWords), keyPoints };
 }

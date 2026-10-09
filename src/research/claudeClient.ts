@@ -1,12 +1,16 @@
-import type { Outline, NoteContent, PdfExtraction, SubfolderSuggestion } from "../types";
-import { outlinePrompt, notesPrompt, pdfPrompt } from "./prompts";
-import { parseOutline, parseNotes, parsePdfExtraction, ParseError } from "./parse";
+import type { Outline, NoteContent, PdfExtraction, PdfOverview, SubfolderSuggestion } from "../types";
+import { outlinePrompt, notesPrompt, pdfPrompt, pdfOverviewPrompt, mergeOverviewsPrompt } from "./prompts";
+import { parseOutline, parseNotes, parsePdfExtraction, parsePdfOverview, ParseError } from "./parse";
 import { ApiError } from "../jobs/queue";
 
 export interface ResearchClient {
   outline(topic: string, parents: string[], max: number): Promise<Outline>;
   notes(topic: string, parents: string[], s: SubfolderSuggestion, count: number): Promise<NoteContent[]>;
   extractPdf(topic: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfExtraction>;
+  /** Stage 1 for one chunk: the document block first, no tools. */
+  overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview>;
+  /** Picks the top 5 key points overall from the chunk results; text only, no document, no tools. */
+  mergeOverviews(pdfName: string, candidates: PdfOverview[]): Promise<PdfOverview>;
 }
 
 export type HttpFn = (req: { url: string; method: "POST"; headers: Record<string, string>; body: string })
@@ -80,5 +84,19 @@ export class ClaudeClient implements ResearchClient {
       { type: "text", text: pdfPrompt(topic, subfolders, pageOffset) },
     ];
     return parsePdfExtraction(await this.call(content, 16000, false), subfolders);
+  }
+
+  async overviewPdf(pdfName: string, subfolders: string[], pdfBase64: string, pageOffset: number): Promise<PdfOverview> {
+    const content = [
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
+      { type: "text", text: pdfOverviewPrompt(pdfName, subfolders, pageOffset) },
+    ];
+    return parsePdfOverview(await this.call(content, 8192, false), subfolders);
+  }
+
+  async mergeOverviews(pdfName: string, candidates: PdfOverview[]): Promise<PdfOverview> {
+    // The candidates' subfolders were already matched to the existing names; only those may come back.
+    const subfolders = [...new Set(candidates.flatMap((c) => c.keyPoints.flatMap((k) => (k.subfolder ? [k.subfolder] : []))))];
+    return parsePdfOverview(await this.call(mergeOverviewsPrompt(pdfName, candidates), 4096, false), subfolders);
   }
 }

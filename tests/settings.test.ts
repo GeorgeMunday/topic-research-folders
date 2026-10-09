@@ -184,3 +184,23 @@ test("research jobs keep a string summary; a wrong-typed summary drops the job",
   const base = { id: "r", kind: "research", path: "T", done: [], approved: [{ name: "A", why: "w" }] };
   expect(mergeData({ jobs: [{ ...base, summary: "s" }, { ...base, summary: 5 }] }).jobs).toEqual([{ ...base, summary: "s" }]);
 });
+
+test("mergeData keeps valid keypoint jobs and drops malformed ones", () => {
+  const point = { name: "Big idea", text: "It matters (p. 3)", detail: "d", pages: "3" };
+  const good = { id: "keypoint:R/Big idea/Big idea.md", kind: "keypoint", path: "R/Big idea/Big idea.md", folder: "R/Big idea", pdfName: "paper.pdf", topic: "paper", parents: [], point };
+  const withSub = { ...good, id: "k2", path: "x.md", parents: ["A", "B"], point: { ...point, subfolder: "Anatomy" } };
+  const bad = [
+    { ...good, folder: 5 },
+    { ...good, pdfName: undefined },
+    { ...good, topic: null },
+    { ...good, parents: "A" },
+    { ...good, parents: [1] },
+    { ...good, point: null },
+    { ...good, point: { ...point, name: 1 } },
+    { ...good, point: { ...point, text: undefined } },
+    { ...good, point: { ...point, detail: [] } },
+    { ...good, point: { ...point, pages: 3 } },
+    { ...good, point: { ...point, subfolder: 7 } },
+  ];
+  expect(mergeData({ jobs: [good, withSub, ...bad] }).jobs).toEqual([good, withSub]);
+});
