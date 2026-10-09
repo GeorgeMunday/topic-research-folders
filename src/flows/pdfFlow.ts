@@ -234,7 +234,7 @@ export class PdfFlow {
         split = await splitPdf(bytes, settings().pdfPagesPerChunk, MAX_CHUNK_BYTES);
       } catch (e) {
         if (e instanceof PdfError) {
-          report(`the PDF is ${e.reason}.`);
+          report(`the PDF is ${e.reason}`);
           return;
         }
         fail(e instanceof Error ? e.message : String(e));

@@ -27,7 +27,7 @@ export class ConfirmModal extends Modal implements Confirmer {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    this.titleEl.setText("Analyse PDFs?");
+    this.titleEl.setText("Analyse this PDF?");
     contentEl.createEl("p", { text: this.message });
     const buttons = contentEl.createDiv({ cls: "modal-button-container" });
     buttons.createEl("button", { text: "Continue", cls: "mod-cta" }).addEventListener("click", () => {

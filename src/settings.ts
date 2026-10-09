@@ -247,7 +247,7 @@ export class SettingsTab extends PluginSettingTab {
 
     const suffix = new Setting(containerEl)
       .setName("Trigger suffix")
-      .setDesc("A new folder whose name ends with this starts a research run.");
+      .setDesc("A folder name or PDF file name ending with this starts research / analysis.");
     const err = suffix.descEl.createDiv();
     err.style.color = "var(--text-error)";
     suffix.addText((t) =>
@@ -258,8 +258,8 @@ export class SettingsTab extends PluginSettingTab {
       }));
 
     new Setting(containerEl)
-      .setName("Remove suffix from folder name")
-      .setDesc("Rename the folder to drop the suffix once research starts.")
+      .setName("Remove suffix from folder or PDF name")
+      .setDesc("Rename the folder or PDF to drop the suffix once research or analysis starts.")
       .addToggle((t) => t.setValue(s.stripSuffix).onChange((v) => { s.stripSuffix = v; save(); }));
 
     const slider = (name: string, desc: string, key: SliderKey, step = 1) => {
@@ -275,14 +275,14 @@ export class SettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Analyse PDFs")
-      .setDesc("Extract notes from PDFs dropped into a researched folder.")
+      .setDesc("Analyse PDFs whose name ends with the suffix (paper+.pdf).")
       .addToggle((t) => t.setValue(s.processPdfs).onChange((v) => { s.processPdfs = v; save(); }));
 
     slider("Pages per PDF chunk", "Large PDFs are sent in chunks of this many pages.", "pdfPagesPerChunk", 5);
 
     new Setting(containerEl)
       .setName("Confirm above pages")
-      .setDesc("Ask before analysing a batch of PDFs with more pages than this.")
+      .setDesc("Ask before analysing a single PDF with more pages than this.")
       .addText((t) => {
         t.inputEl.type = "number";
         t.setValue(String(s.confirmAbovePages)).onChange((v) => {
