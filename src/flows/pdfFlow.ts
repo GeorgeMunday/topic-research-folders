@@ -85,6 +85,9 @@ export class PdfFlow {
   private inFlight = new Set<string>();
   // Trigger paths being handled right now: create and rename events for one file can arrive together.
   private triggering = new Set<string>();
+  // Paths produced by our own suffix-stripping rename whose clean name is itself a trigger name
+  // (`C++.pdf` -> `C+.pdf`): the rename event for them is consumed once and ignored.
+  private ownRenames = new Set<string>();
   private lastRun = new Map<string, number>();
   private retryPending = new Set<string>();
   // Completed chunk results per file hash, kept across retry attempts so a retry does not resend them.
@@ -100,6 +103,7 @@ export class PdfFlow {
    * `paper.pdf+`) does anything; everything else returns after a little string work.
    */
   async onFileEvent(path: string): Promise<void> {
+    if (this.ownRenames.delete(path)) return;
     if (!this.ready) return;
     const t = pdfTriggerName(baseName(path), this.deps.settings().triggerSuffix);
     if (!t || this.triggering.has(path)) return;
@@ -125,7 +129,15 @@ export class PdfFlow {
       const ext = clean.slice(-4);
       const stem = uniqueName(clean.slice(0, -4), (c) => taken.has(`${c}${ext}`.toLowerCase()));
       finalPath = dir ? `${dir}/${stem}${ext}` : `${stem}${ext}`;
-      await rename(path, finalPath);
+      // Recorded before the await: the vault's rename event can fire during the call.
+      const own = pdfTriggerName(`${stem}${ext}`, settings().triggerSuffix) !== null;
+      if (own) this.ownRenames.add(finalPath);
+      try {
+        await rename(path, finalPath);
+      } catch (e) {
+        if (own) this.ownRenames.delete(finalPath);
+        throw e;
+      }
     }
     let pages: number;
     try {

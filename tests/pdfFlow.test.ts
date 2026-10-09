@@ -837,3 +837,62 @@ describe("explicit triggers and one-by-one confirmation", () => {
     expect("setTimer" in (c.flow as any).deps).toBe(false);
   });
 });
+
+describe("fix round 1: the plugin's own rename never retriggers", () => {
+  // Obsidian fires a rename event for the new path while the plugin renames the file.
+  function withRenameEvents(c: Ctx) {
+    const pending: Promise<void>[] = [];
+    const deps = (c.flow as any).deps;
+    const real = deps.rename;
+    deps.rename = async (from: string, to: string) => { await real(from, to); pending.push(c.flow.onFileEvent(to)); };
+    return async () => { while (pending.length) await pending.shift(); };
+  }
+
+  test("C++.pdf is renamed exactly once to C+.pdf and enqueues exactly one job for C+.pdf; a later genuine event for that path is honoured", async () => {
+    const c = setup();
+    const settle = withRenameEvents(c);
+    drop(c, "Topic/C++.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/C++.pdf");
+    await settle();
+    expect(c.renames).toEqual([["Topic/C++.pdf", "Topic/C+.pdf"]]);
+    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/C+.pdf"]);
+    // The user renames something to C+.pdf later: the remembered rename was consumed once, so this one counts.
+    await c.flow.onFileEvent("Topic/C+.pdf");
+    await settle();
+    expect(c.renames.at(-1)).toEqual(["Topic/C+.pdf", "Topic/C.pdf"]);
+    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/C+.pdf", "Topic/C.pdf"]);
+  });
+
+  test("paper+.pdf+ ends as paper+.pdf after one rename with one job", async () => {
+    const c = setup();
+    const settle = withRenameEvents(c);
+    drop(c, "Topic/paper+.pdf+", pdf1);
+    await c.flow.onFileEvent("Topic/paper+.pdf+");
+    await settle();
+    expect(c.renames).toEqual([["Topic/paper+.pdf+", "Topic/paper+.pdf"]]);
+    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/paper+.pdf"]);
+  });
+
+  test("stripSuffix off is unaffected: no rename, one job for the original name", async () => {
+    const c = setup({ stripSuffix: false });
+    const settle = withRenameEvents(c);
+    drop(c, "Topic/C++.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/C++.pdf");
+    await settle();
+    expect(c.renames).toEqual([]);
+    expect(c.enqueued.map((j) => j.path)).toEqual(["Topic/C++.pdf"]);
+  });
+
+  test("a failed rename forgets the remembered path", async () => {
+    const c = setup();
+    (c.flow as any).deps.rename = async () => { throw new Error("locked"); };
+    drop(c, "Topic/C++.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/C++.pdf");
+    expect(c.enqueued).toEqual([]);
+    // A real file later named C+.pdf is a trigger again.
+    (c.flow as any).deps.rename = async (from: string, to: string) => { c.renames.push([from, to]); };
+    drop(c, "Topic/C+.pdf", pdf1);
+    await c.flow.onFileEvent("Topic/C+.pdf");
+    expect(c.renames).toEqual([["Topic/C+.pdf", "Topic/C.pdf"]]);
+  });
+});
