@@ -43,7 +43,7 @@ function vaultWithRust(subject = "coding", lang: string | undefined = "rust") {
   return v;
 }
 
-function researchFlow(v: MemVault, outline: (...a: any[]) => Promise<Outline>, notes = vi.fn(async (..._a: any[]) => [note("n")])) {
+function researchFlow(v: MemVault, outline: (...a: any[]) => Promise<Outline>, notes = vi.fn(async (..._a: any[]) => ({ notes: [note("n")], quiz: { questions: [], answers: [] } }))) {
   const events: Progress[] = [];
   const flow = new ResearchFlow({
     client: () => ({ outline, notes } as any), writer: new VaultWriter(v), notify, rename: async () => {},
@@ -95,7 +95,7 @@ describe("key point flow subject", () => {
   const job = (over: object = {}) => ({ id: "k", kind: "keypoint", path: "Programming/Rust/Ownership/Moves/Moves.md", folder: "Programming/Rust/Ownership/Moves", pdfName: "p.pdf", topic: "p", parents: [], point: kp("Moves"), ...over }) as Job;
   const run = async (v: MemVault, j: Job) => {
     v.folders.add("Programming/Rust/Ownership/Moves");
-    const notes = vi.fn(async (..._a: any[]) => [note("n")]);
+    const notes = vi.fn(async (..._a: any[]) => ({ notes: [note("n")], quiz: { questions: [], answers: [] } }));
     await new KeypointFlow({ client: () => ({ notes } as any), writer: new VaultWriter(v), notify, settings: () => settings, today: () => "2026-10-09" }).run(j, noSignal, noCp);
     return (notes.mock.calls[0] as any[])[4];
   };

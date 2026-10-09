@@ -1,7 +1,8 @@
 import { sanitiseName, uniqueName } from "../names";
 import { buildContext, type FolderContext } from "../context";
-import { renderNote, renderOverview, renderPdfOverview } from "./noteTemplate";
-import type { KeyPoint, NoteContent, Outline, PdfOverview, SubfolderNotes } from "../types";
+import { oneLine, renderNote, renderOverview, renderPdfOverview } from "./noteTemplate";
+import { quizFileNames, renderAnswers, renderQuestions } from "../quiz";
+import type { KeyPoint, NoteContent, Outline, PdfOverview, Quiz, SubfolderNotes } from "../types";
 
 export interface VaultLike {
   exists(path: string): boolean;
@@ -103,6 +104,32 @@ export class VaultWriter {
     return title;
   }
 
+  /**
+   * The "<folder> - Questions" / "- Answers" pair for the notes just written into `folder`. Answers link the note
+   * they come from (full path with the title as alias, like the Overview). Nothing is written without questions.
+   */
+  private async writeQuiz(
+    folder: string, topic: string, subtopic: string, notes: NoteContent[], titles: string[], quiz: Quiz | undefined, date: string,
+  ): Promise<void> {
+    const n = quiz ? Math.min(quiz.questions.length, quiz.answers.length) : 0;
+    if (!quiz || n === 0) return;
+    const written = new Map<string, string>();
+    notes.forEach((note, i) => { written.set(oneLine(note.title).toLowerCase(), titles[i]); });
+    for (const t of titles) written.set(t.toLowerCase(), t);
+    const name = basename(folder);
+    let k = 1;
+    let names = quizFileNames(name, k);
+    while (this.taken(folder, `${names.questions}.md`) || this.taken(folder, `${names.answers}.md`)) names = quizFileNames(name, ++k);
+    const answers = quiz.answers.slice(0, n).map((a) => {
+      const title = a.note ? written.get(oneLine(a.note).toLowerCase()) : undefined;
+      return { text: a.text, ...(title ? { link: `[[${folder}/${title}|${title}]]` } : {}) };
+    });
+    await this.vault.createFile(join(folder, `${names.questions}.md`),
+      renderQuestions({ topic, subtopic, date, file: names.questions, other: names.answers, questions: quiz.questions.slice(0, n) }));
+    await this.vault.createFile(join(folder, `${names.answers}.md`),
+      renderAnswers({ topic, subtopic, date, file: names.answers, other: names.questions, answers }));
+  }
+
   async writeSubfolder(
     parent: string,
     topic: string,
@@ -122,6 +149,7 @@ export class VaultWriter {
         ),
       );
     }
+    await this.writeQuiz(folder, topic, sn.subfolder, sn.notes, noteTitles, sn.quiz, date);
     return { folder, noteTitles };
   }
 
@@ -209,6 +237,7 @@ export class VaultWriter {
     subtopic: string,
     notes: NoteContent[],
     date: string,
+    quiz?: Quiz,
   ): Promise<{ noteTitles: string[] }> {
     folder = await this.ensureFolder(folder);
     const used = new Set<string>();
@@ -216,6 +245,7 @@ export class VaultWriter {
     for (const note of notes) {
       noteTitles.push(await this.writeUniqueNote(folder, note.title, used, () => renderNote(note, { topic, subtopic, date })));
     }
+    await this.writeQuiz(folder, topic, subtopic, notes, noteTitles, quiz, date);
     return { noteTitles };
   }
 

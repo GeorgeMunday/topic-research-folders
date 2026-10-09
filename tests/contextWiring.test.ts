@@ -56,7 +56,7 @@ describe("research flow", () => {
   test("outline and notes both get the context of the folders above the topic", async () => {
     const v = vaultWithRust();
     const outline = vi.fn(async (topic: string, _p: string[], _m: number, _c?: string): Promise<Outline> => ({ topic, summary: "s", subfolders: [{ name: "Moves", why: "w" }] }));
-    const notes = vi.fn(async () => [note("n")]);
+    const notes = vi.fn(async () => ({ notes: [note("n")], quiz: { questions: [], answers: [] } }));
     const flow = new ResearchFlow({
       client: () => ({ outline, notes } as any), writer: new VaultWriter(v), notify, rename: async () => {},
       settings: () => settings, today: () => "2026-10-09", enqueue: () => true,
@@ -78,7 +78,7 @@ describe("key point flow", () => {
   test("notes get the context of the key point's folder", async () => {
     const v = vaultWithRust();
     v.folders.add("Programming/Rust/Ownership/Moves");
-    const notes = vi.fn(async () => [note("n")]);
+    const notes = vi.fn(async () => ({ notes: [note("n")], quiz: { questions: [], answers: [] } }));
     const flow = new KeypointFlow({ client: () => ({ notes } as any), writer: new VaultWriter(v), notify, settings: () => settings, today: () => "2026-10-09" });
     const job = { id: "k", kind: "keypoint", path: "Programming/Rust/Ownership/Moves/Moves.md", folder: "Programming/Rust/Ownership/Moves", pdfName: "p.pdf", topic: "p", parents: [], point: kp("Moves") } as Job;
     await flow.run(job, { cancelled: false }, async () => {});

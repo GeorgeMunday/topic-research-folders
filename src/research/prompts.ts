@@ -55,8 +55,10 @@ Subject: ${subject}${lang ? ` (${lang})` : ""}. ${SUBJECTS[subject].instructions
 
 ${RULES}
 
+Also write a quiz for these notes: "questions" (5 to 8, mixing recall, understanding and apply/explain questions) and "answers" (numbered to match the questions: the same order and the same count, each answer 1 to 3 sentences). In each answer, "note" is the exact title of the note it comes from. ${SUBJECTS[subject].quiz?.(lang) ?? ""}
+
 JSON only, in this shape:
-{"notes": [{"title": "string", "summary": "string", "keyPoints": ["string"], "plainWords": "string", "extras": ${SUBJECTS[subject].shape(lang)}}]}`;
+{"notes": [{"title": "string", "summary": "string", "keyPoints": ["string"], "plainWords": "string", "extras": ${SUBJECTS[subject].shape(lang)}}], "questions": ["string"], "answers": [{"answer": "string", "note": "string"}]}`;
 }
 
 const overviewShape = (withSubject: boolean) =>

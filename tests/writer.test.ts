@@ -44,7 +44,7 @@ describe("writeSubfolder", () => {
     const r = await w.writeSubfolder("Black holes", "Black holes", sn("Anatomy", "Event horizon", "Singularity"), DATE);
     expect(r).toEqual({ folder: "Black holes/Anatomy", noteTitles: ["Event horizon", "Singularity"] });
     expect(v.folders.has("Black holes/Anatomy")).toBe(true);
-    expect(v.files.get("Black holes/Anatomy/Event horizon.md")).toContain("## Questions & Answers");
+    expect(v.files.get("Black holes/Anatomy/Event horizon.md")).not.toContain("## Questions & Answers");
     expect(v.files.has("Black holes/Anatomy/Singularity.md")).toBe(true);
   });
 
@@ -239,7 +239,7 @@ describe("writePdfOverview outside a research root", () => {
     ]);
     expect(md).toContain("## In plain words\nStars are big hot balls.");
     expect(md).toContain("## My notes");
-    expect(md).toContain("## Questions & Answers");
+    expect(md).not.toContain("## Questions & Answers");
     // The container is now a research root of its own.
     expect(await w.isResearchRoot("Inbox/paper")).toBe(true);
     // Entry notes use the normal template, built from what the PDF says.
@@ -252,7 +252,7 @@ describe("writePdfOverview outside a research root", () => {
     // "In plain words" is what the PDF says about this key point, not the document-level text.
     expect(entry).toContain("## In plain words\nThe paper explains Fusion. It gives an example.\n");
     expect(entry).not.toContain("Stars are big hot balls.");
-    expect(entry).toContain("## Questions & Answers");
+    expect(entry).not.toContain("## Questions & Answers");
     expect(entry).not.toContain("research-root");
   });
 
@@ -363,7 +363,7 @@ describe("writeKeypointNotes", () => {
     expect(v.files.get("paper/Fusion/Fusion.md")).toBe("ENTRY");
     const md = v.files.get("paper/Fusion/How - stars burn.md")!;
     expect(md).toContain('topic: "paper"\nsubtopic: "Fusion"');
-    expect(md).toContain("## Questions & Answers");
+    expect(md).not.toContain("## Questions & Answers");
     expect([...v.folders]).toEqual(["paper", "paper/Fusion"]);
   });
 });

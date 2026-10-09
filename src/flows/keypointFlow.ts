@@ -67,7 +67,7 @@ export class KeypointFlow {
       const fc = await writer.context(job.folder);
       // The job's own subject (a PDF that differs from its root), else the nearest root's, read now so an edit wins.
       const { subject, codeLanguage } = resolveSubject({ subject: job.subject, codeLanguage: job.codeLanguage }, fc.inherited);
-      const notes = await client.notes(
+      const { notes, quiz } = await client.notes(
         job.topic,
         job.parents,
         { name: point.name, why: `${point.text} — from the PDF "${job.pdfName}"${docSummary ? ` (${docSummary})` : ""}: ${point.detail}` },
@@ -75,7 +75,7 @@ export class KeypointFlow {
         { context: contextToPrompt(fc), subject, codeLanguage },
       );
       if (signal.cancelled) { fail(CANCELLED_MESSAGE); return; }
-      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today());
+      const res = await writer.writeKeypointNotes(job.folder, job.topic, point.name, notes, today(), quiz);
       emit({ kind: "done", folders: 1, notes: res.noteTitles.length });
     } catch (err) {
       if (isRetryable(err)) {

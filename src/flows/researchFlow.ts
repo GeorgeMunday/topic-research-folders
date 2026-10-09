@@ -177,8 +177,8 @@ export class ResearchFlow {
       if (signal.cancelled) { cancelled(); return; }
       emit({ kind: "writing", index: i + 1, total: approved.length, name: sub.name });
       try {
-        const notes = await client.notes(topic, parents, sub, s.notesPerSubfolder, { context: folderContext, subject, codeLanguage });
-        const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes }, today());
+        const { notes, quiz } = await client.notes(topic, parents, sub, s.notesPerSubfolder, { context: folderContext, subject, codeLanguage });
+        const res = await writer.writeSubfolder(job.path, topic, { subfolder: sub.name, notes, quiz }, today());
         results.set(sub.name, { subfolder: baseName(res.folder), noteTitles: res.noteTitles, folder: res.folder });
         written++;
         notesWritten += res.noteTitles.length;

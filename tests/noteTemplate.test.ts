@@ -27,11 +27,6 @@ Cross it and you can't come back.
 ## My notes
 
 - 
-
-## Questions & Answers
-
-**Q:** 
-**A:** 
 `);
 });
 test("pdf notes carry source and pages", () => {
@@ -43,7 +38,7 @@ test("overview is marked as research root and links notes", () => {
     [{ subfolder: "Anatomy", noteTitles: ["Event horizon"] }], "2026-10-08");
   expect(md).toContain("research-root: true");
   expect(md).toContain("- **Anatomy**\n  - [[Event horizon]]");
-  expect(md).toContain("## Questions & Answers");
+  expect(md).not.toContain("## Questions & Answers");
 });
 test("quotes in frontmatter escaped", () => {
   expect(renderNote(note, { topic: 'The "Big" one', subtopic: "A", date: "2026-10-08" }))
@@ -135,11 +130,6 @@ Plain words.
 ## My notes
 
 - 
-
-## Questions & Answers
-
-**Q:** 
-**A:** 
 `);
 });
 

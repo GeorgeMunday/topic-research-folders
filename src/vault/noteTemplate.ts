@@ -2,12 +2,12 @@ import type { KeyPoint, NoteContent, Outline, PdfOverview } from "../types";
 import { renderExtras } from "../subjects";
 
 // Collapse any run of whitespace (including line breaks) to one space, then trim.
-function oneLine(value: string): string {
+export function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
 // Wrap a value as a single-line double-quoted YAML scalar, escaping backslashes and quotes.
-function yamlString(value: string): string {
+export function yamlString(value: string): string {
   return `"${oneLine(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
@@ -27,8 +27,6 @@ function subjectLines(s: { subject?: string; codeLanguage?: string }): string[] 
   if (!s.subject) return [];
   return [`subject: ${s.subject}`, ...(s.subject === "coding" && s.codeLanguage ? [`codeLanguage: ${s.codeLanguage}`] : [])];
 }
-
-const QA_BLOCK = ["## Questions & Answers", "", "**Q:** ", "**A:** "];
 
 export function renderNote(
   note: NoteContent,
@@ -55,8 +53,6 @@ export function renderNote(
     "## My notes",
     "",
     "- ",
-    "",
-    ...QA_BLOCK,
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }
@@ -93,8 +89,6 @@ export function renderOverview(
     "## Subfolders",
     "",
     ...sections,
-    "",
-    ...QA_BLOCK,
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }
@@ -133,8 +127,6 @@ export function renderPdfOverview(
     "## My notes",
     "",
     "- ",
-    "",
-    ...QA_BLOCK,
   ];
   return `${frontmatter.join("\n")}\n\n${body.join("\n")}\n`;
 }

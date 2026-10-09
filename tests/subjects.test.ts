@@ -126,7 +126,7 @@ describe("invalid or missing extras never crash", () => {
       { title: "B", summary: "s", keyPoints: ["k"], plainWords: "p", extras: RAW.maths },
       { title: "C", summary: "s", keyPoints: ["k"], plainWords: "p" },
     ] });
-    const notes = parseNotes(json, 5, "maths");
+    const notes = parseNotes(json, 5, "maths").notes;
     expect(notes.map((n) => n.title)).toEqual(["A", "B", "C"]);
     expect(notes[0].extras).toBeUndefined();
     expect(notes[1].extras).toMatchObject({ subject: "maths" });
@@ -134,9 +134,9 @@ describe("invalid or missing extras never crash", () => {
   });
 
   test("parseNotes without a subject asks for general extras and tags coding notes with the language", () => {
-    const g = parseNotes(JSON.stringify({ notes: [{ title: "A", summary: "s", keyPoints: ["k"], plainWords: "p", extras: RAW.general }] }), 3);
+    const g = parseNotes(JSON.stringify({ notes: [{ title: "A", summary: "s", keyPoints: ["k"], plainWords: "p", extras: RAW.general }] }), 3).notes;
     expect(g[0].extras).toMatchObject({ subject: "general" });
-    const c = parseNotes(JSON.stringify({ notes: [{ title: "A", summary: "s", keyPoints: ["k"], plainWords: "p", extras: RAW.coding }] }), 3, "coding", "rust");
+    const c = parseNotes(JSON.stringify({ notes: [{ title: "A", summary: "s", keyPoints: ["k"], plainWords: "p", extras: RAW.coding }] }), 3, "coding", "rust").notes;
     expect(c[0].extras).toMatchObject({ subject: "coding", codeLanguage: "rust" });
   });
 });

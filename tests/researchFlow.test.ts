@@ -62,7 +62,7 @@ function setup(over: { settings?: Partial<Settings>; approve?: SubfolderSuggesti
       calls.notes.push([topic, parents, s.name, count]);
       const e = failNotes.get(s.name);
       if (e) throw e;
-      return [note(`${s.name} note`)];
+      return { notes: [note(`${s.name} note`)], quiz: { questions: [], answers: [] } };
     },
   };
   const deps: ResearchDeps = {

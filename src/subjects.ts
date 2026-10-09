@@ -16,6 +16,8 @@ export interface SubjectDef {
   shape(codeLanguage?: string): string;
   /** The fields of valid extras, or null when the raw value is unusable. */
   parse(raw: Record<string, unknown>, codeLanguage?: string): Record<string, unknown> | null;
+  /** Extra quiz guidance for this subject (e.g. code questions); none by default. */
+  quiz?(codeLanguage?: string): string;
   /** Markdown sections (separated by blank lines, none trailing) for validated extras. */
   render(extras: Extras): string[];
 }
@@ -58,6 +60,8 @@ const TABLE = def({
       `each at most ${MAX_CODE_LINES} lines of ${lang ?? "the topic's language"} whose first line is a one-line comment saying what it shows. ` +
       `The code must be correct and runnable as shown, or its first comment must say it is a fragment. Write the code as plain text without code fences, using \\n for line breaks. ` +
       `Also give "mistakes": 2 to 4 short common mistakes (shown under "Common mistakes").`,
+    quiz: (lang) =>
+      `Include a few "what does this code print" and "fix this bug" questions, each with a small ${lang ?? ""} code block inside the question (fenced with three backticks and the language, written with \\n for line breaks).`,
     shape: () => `{"examples": ["string"], "mistakes": ["string"]}`,
     parse: (raw) => {
       const examples = (Array.isArray(raw.examples) ? raw.examples : [])
