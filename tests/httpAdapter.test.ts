@@ -58,3 +58,12 @@ describe("makeGet", () => {
     expect(err.cause).toBeUndefined();
   });
 });
+
+describe("makeGet body", () => {
+  test("omits body for GET", async () => {
+    let seen: any;
+    const get = makeGet((async (o: any) => { seen = o; return { status: 200, json: {}, headers: {} }; }) as any);
+    await get({ url: "https://x/models", method: "GET", headers: {} });
+    expect("body" in seen).toBe(false);
+  });
+});

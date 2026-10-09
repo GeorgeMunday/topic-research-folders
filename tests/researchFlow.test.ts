@@ -656,12 +656,71 @@ describe("run identity after cancel and across flows", () => {
     s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
     s.v.folders.add("T");
     const orig = s.deps.client()!;
-    s.deps.client = () => ({ ...orig, outline: async () => { throw new ApiError("overloaded", 503); } });
-    await expect(s.flow.run(rjob("T"), { cancelled: true }, async () => {})).rejects.toBeInstanceOf(ApiError);
+    const sig = { cancelled: false };
+    s.deps.client = () => ({ ...orig, outline: async () => { sig.cancelled = true; throw new ApiError("overloaded", 503); } });
+    await expect(s.flow.run(rjob("T"), sig, async () => {})).rejects.toBeInstanceOf(ApiError);
     expect(events.some((x) => x[1].kind === "step" && x[1].text.startsWith("Retrying"))).toBe(false);
     const first = events[0][2].runId;
     s.deps.client = () => orig;
     await s.run(rjob("T"));
     expect(events.at(-1)![2].runId).not.toBe(first);
+  });
+});
+
+describe("final-fix: waiting step, pre-cancel, all-failed", () => {
+  type Ev = [string, Progress, ProgressSource];
+  function withSink(over: Parameters<typeof setup>[0] = {}) {
+    const s = setup(over);
+    const events: Ev[] = [];
+    s.deps.progress = (p, e, src) => { events.push([p, e, src]); };
+    return { ...s, events, kinds: () => events.map((x) => x[1]) };
+  }
+  test("researchFolder emits one waiting step (no runId) when queued", async () => {
+    const s = withSink();
+    s.flow.markReady();
+    s.v.folders.add("T");
+    await s.flow.researchFolder("T");
+    expect(s.events).toHaveLength(1);
+    expect(s.events[0][1]).toEqual({ kind: "step", text: "Waiting for other jobs…" });
+    expect(s.events[0][2]).toEqual({ kind: "research", resumed: false });
+  });
+  test("no waiting step when enqueue returns false or there is no sink", async () => {
+    const s = withSink();
+    s.flow.markReady();
+    s.v.folders.add("T");
+    s.deps.enqueue = () => false;
+    await s.flow.researchFolder("T");
+    expect(s.events).toEqual([]);
+    const n = setup();
+    n.flow.markReady();
+    n.v.folders.add("T");
+    await n.flow.researchFolder("T");
+    expect(n.enqueued).toHaveLength(1);
+  });
+  test("a pre-cancelled signal makes no outline call and ends with failed Cancelled and no step", async () => {
+    const s = withSink();
+    s.v.folders.add("T");
+    await s.flow.run(rjob("T"), { cancelled: true }, async () => {});
+    expect(s.calls.outline).toEqual([]);
+    expect(s.kinds()).toEqual([{ kind: "failed", error: CANCELLED_MESSAGE }]);
+  });
+  test("all subfolders failing emits failed, writes no overview and queues no PDFs", async () => {
+    const s = withSink({ approve: [A, B], pdfs: ["T/x.pdf"] });
+    s.v.folders.add("T");
+    s.failNotes.set("A", new Error("bad"));
+    s.failNotes.set("B", new Error("bad"));
+    await s.run(rjob("T"));
+    expect(s.kinds().at(-1)).toEqual({ kind: "failed", error: "No subfolders could be written" });
+    expect(s.kinds().some((e) => e.kind === "done")).toBe(false);
+    expect([...s.v.files.keys()].some((f) => f.includes("Overview"))).toBe(false);
+    expect(s.queuedPdfs).toEqual([]);
+  });
+  test("all failing without a sink notifies an error", async () => {
+    const s = setup({ approve: [A] });
+    s.v.folders.add("T");
+    s.failNotes.set("A", new Error("bad"));
+    await s.run(rjob("T"));
+    expect(s.errors).toContain("No subfolders could be written");
+    expect(s.infos).toEqual([]);
   });
 });

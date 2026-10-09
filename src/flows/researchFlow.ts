@@ -76,7 +76,9 @@ export class ResearchFlow {
 
   async researchFolder(path: string): Promise<void> {
     if (!(await this.precheck(path))) return;
-    this.deps.enqueue({ id: `research:${path}`, kind: "research", path, done: [] });
+    const queued = this.deps.enqueue({ id: `research:${path}`, kind: "research", path, done: [] });
+    // A queued job may wait a long time for a slot; give the UI something to show right away.
+    if (queued) this.deps.progress?.(path, { kind: "step", text: "Waiting for other jobs…" }, { kind: "research", resumed: false });
   }
 
   /** Forget a pending retry (the queue gave up or the job was cancelled) so the next run gets a fresh id. */
@@ -122,6 +124,9 @@ export class ResearchFlow {
       reject(`Not researching "${topic}": nesting would be ${parents.length + 1} levels deep (limit ${s.maxDepth}).`, "error");
       return;
     }
+
+    // Cancel-all may have landed while the checks above were awaiting.
+    if (signal.cancelled) { cancelled(); return; }
 
     let current: Job = job;
     let outline: Outline | undefined;
@@ -185,6 +190,13 @@ export class ResearchFlow {
       await checkpoint(current);
     }
     if (signal.cancelled) { cancelled(); return; }
+
+    if (written + job.done.length === 0) {
+      const msg = "No subfolders could be written";
+      if (progress) finish({ kind: "failed", error: msg });
+      else notify.error(msg);
+      return;
+    }
 
     const ov: Outline = outline ?? { topic, summary: "", subfolders: approved };
     const links = approved

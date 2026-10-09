@@ -325,8 +325,6 @@ describe("ModelCatalog", () => {
     await catalog.refresh();
     expect(catalog.state().status).toBe("error");
     expect(catalog.state().models).toEqual([]);
-    catalog.ensure();
-    expect(catalog.state().status).toBe("loading");
   });
 
   test("blank key also clears the cache", () => {
@@ -340,6 +338,17 @@ describe("ModelCatalog", () => {
     const s = setup({ cache: stale() });
     s.catalog.ensure();
     s.catalog.ensure();
+    await flush();
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test("ensure() does nothing while the key debounce timer is pending", async () => {
+    const s = setup({ cache: stale() });
+    s.catalog.keyChanged();
+    s.catalog.ensure();
+    await flush();
+    expect(s.calls).toHaveLength(0);
+    [...s.timers.values()][0].fn();
     await flush();
     expect(s.calls).toHaveLength(1);
   });

@@ -192,6 +192,7 @@ export class PdfFlow {
     try { bytes = await readBinary(job.path); } catch { return; }
     const hash = await sha256(bytes);
     if (processed()[hash] || this.inFlight.has(hash)) return;
+    if (signal.cancelled) return;
     this.inFlight.add(hash);
     let runId: number;
     const prev = this.lastRun.get(job.path);

@@ -87,6 +87,11 @@ export function noticeFor(
   return null;
 }
 
+/** Whether a step event should create (and open) a new modal session. */
+export function shouldOpenSession(o: { resumed: boolean; restored: boolean; hasSession: boolean }): boolean {
+  return !o.hasSession && !o.resumed && !o.restored;
+}
+
 // Decides whether a progress event belongs to the run the UI currently tracks for a path.
 export class RunGate {
   private current = new Map<string, number>();
@@ -109,6 +114,9 @@ export class RunGate {
     if (e.kind === "done" || e.kind === "failed") this.ended.add(path);
     return true;
   }
+
+  /** True when the path has a current run that has not yet ended. */
+  live(path: string): boolean { return this.current.has(path) && !this.ended.has(path); }
 
   currentRun(path: string): number | undefined { return this.current.get(path); }
 

@@ -15,7 +15,7 @@ import { ResearchFlow } from "./flows/researchFlow";
 import type { Notifier } from "./flows/researchFlow";
 import { PdfFlow } from "./flows/pdfFlow";
 import { decideRename } from "./events";
-import { ProgressTracker, RunGate, noticeFor, CANCELLED_MESSAGE } from "./progress";
+import { ProgressTracker, RunGate, nextRunId, noticeFor, shouldOpenSession, CANCELLED_MESSAGE } from "./progress";
 import type { ProgressSink } from "./progress";
 import { ExplorerSpinner } from "./ui/explorerSpinner";
 import { ResearchProgressModal } from "./ui/ResearchProgressModal";
@@ -124,8 +124,9 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     tracker.onChange(() => { updateStatus(); spinner.set(tracker.active()); });
 
     const gate = new RunGate();
+    // Jobs restored from data.json: they stay silent at startup (no modal from their first step).
+    const restoredPaths = new Set<string>();
     let unloaded = false;
-    let syntheticRun = 0;
     const sessions = new Map<string, ResearchProgressModal>();
     const noticed = new Set<string>();
     const dropSession = (path: string, s: ResearchProgressModal) => {
@@ -150,7 +151,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
       let session = sessions.get(path);
       if (e.kind === "step" && !src.resumed) {
         if (session?.isDone()) { const old = session; dropSession(path, old); old.forceClose(); session = undefined; }
-        if (!session) { session = createSession(path); session.open(); }
+        if (shouldOpenSession({ resumed: src.resumed, restored: restoredPaths.has(path), hasSession: !!session })) { session = createSession(path); session.open(); }
       }
       session?.handle(e);
       const note = noticeFor(path, e, src, { modalOpen: session?.isVisible() ?? false, topic: baseName(path) });
@@ -162,7 +163,10 @@ export default class TopicResearchFoldersPlugin extends Plugin {
           if (note.error) notify.error(note.text); else notify.info(note.text);
         }
       }
-      if ((e.kind === "done" || e.kind === "failed") && session && !session.isVisible()) dropSession(path, session);
+      if (e.kind === "done" || e.kind === "failed") {
+        restoredPaths.delete(path);
+        if (session && !session.isVisible()) dropSession(path, session);
+      }
     };
 
     const queue = new JobQueue(
@@ -191,7 +195,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
           pdfFlow.dropCache(job.path);
           const msg = err instanceof Error ? err.message : "unexpected error";
           // Reuse the run id the flow used so a failed it already sent is deduplicated; the queue gave up, so forget any pending retry.
-          const runId = gate.currentRun(job.path) ?? -(++syntheticRun);
+          const runId = (gate.live(job.path) ? gate.currentRun(job.path) : undefined) ?? nextRunId();
           if (job.kind === "research") researchFlow.endRun(job.path); else pdfFlow.endRun(job.path);
           sink(job.path, { kind: "failed", error: msg }, { kind: job.kind, resumed: job.kind === "research" && !!job.approved, runId });
           if (job.kind === "pdf") notify.error(`Research job failed (${job.kind}: ${job.path}): ${msg}`);
@@ -337,6 +341,7 @@ export default class TopicResearchFoldersPlugin extends Plugin {
     );
 
     const resumed = [...this.data.jobs];
+    for (const j of resumed) if (j.kind === "research") restoredPaths.add(j.path);
     this.stopFns = [
       () => queue.shutdown(),
       () => catalog.dispose(),

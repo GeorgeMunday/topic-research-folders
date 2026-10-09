@@ -1,5 +1,5 @@
 import { test, expect, describe } from "vitest";
-import { ProgressTracker, CANCELLED_MESSAGE, noticeFor, RunGate, nextRunId } from "../src/progress";
+import { ProgressTracker, CANCELLED_MESSAGE, noticeFor, RunGate, nextRunId, shouldOpenSession } from "../src/progress";
 
 const src = { kind: "research" as const, resumed: false };
 
@@ -151,5 +151,33 @@ describe("run id uniqueness", () => {
     g.cancel("a.pdf");
     expect(g.accept("a.pdf", { kind: "step", text: "x" }, pdf)).toBe(false);
     expect(g.accept("T", { kind: "step", text: "x" }, res)).toBe(true);
+  });
+});
+
+describe("final-fix helpers", () => {
+  test("shouldOpenSession: only for a fresh, non-restored step with no session", () => {
+    expect(shouldOpenSession({ resumed: false, restored: false, hasSession: false })).toBe(true);
+    expect(shouldOpenSession({ resumed: true, restored: false, hasSession: false })).toBe(false);
+    expect(shouldOpenSession({ resumed: false, restored: true, hasSession: false })).toBe(false);
+    expect(shouldOpenSession({ resumed: false, restored: false, hasSession: true })).toBe(false);
+  });
+  test("RunGate.live is true only while the current run has not ended", () => {
+    const g = new RunGate();
+    const src = { kind: "research" as const, resumed: false, runId: 5 };
+    expect(g.live("A")).toBe(false);
+    g.accept("A", { kind: "step", text: "x" }, src);
+    expect(g.live("A")).toBe(true);
+    g.accept("A", { kind: "done", folders: 1, notes: 1 }, src);
+    expect(g.live("A")).toBe(false);
+    g.accept("B", { kind: "step", text: "x" }, { kind: "research", resumed: false, runId: 6 });
+    g.cancel("B");
+    expect(g.live("B")).toBe(false);
+  });
+  test("RunGate accepts a runId-less waiting step, then the real run's events", () => {
+    const g = new RunGate();
+    expect(g.accept("A", { kind: "step", text: "Waiting for other jobs…" }, { kind: "research", resumed: false })).toBe(true);
+    const src = { kind: "research" as const, resumed: false, runId: 9 };
+    expect(g.accept("A", { kind: "step", text: "Suggesting folders…" }, src)).toBe(true);
+    expect(g.accept("A", { kind: "done", folders: 1, notes: 1 }, src)).toBe(true);
   });
 });

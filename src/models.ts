@@ -145,7 +145,7 @@ export class ModelCatalog {
 
   ensure(): void {
     if (!this.hasKey()) { this.gen++; this.inflight = false; this.set({ status: "nokey", models: [] }); return; }
-    if (this.inflight) return;
+    if (this.inflight || this.timer !== null) return; // a pending debounce timer will refresh
     const cache = this.cached();
     if (cache && isCacheFresh(cache, this.deps.now())) { this.set({ status: "ready", models: cache.models }); return; }
     void this.refresh();

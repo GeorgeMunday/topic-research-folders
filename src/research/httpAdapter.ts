@@ -1,6 +1,6 @@
 import type { HttpFn } from "./claudeClient";
 
-export interface RequestUrlParam { url: string; method: string; headers: Record<string, string>; body: string; throw: boolean; }
+export interface RequestUrlParam { url: string; method: string; headers: Record<string, string>; body?: string; throw: boolean; }
 export interface RequestUrlResult { status: number; json: any; headers: Record<string, string>; }
 export type RequestUrlFn = (p: RequestUrlParam) => Promise<RequestUrlResult>;
 
@@ -31,7 +31,7 @@ export function makeGet(requestUrl: RequestUrlFn): GetFn {
   return async (req) => {
     let res: RequestUrlResult;
     try {
-      res = await requestUrl({ url: req.url, method: req.method, headers: req.headers, body: "", throw: false });
+      res = await requestUrl({ url: req.url, method: req.method, headers: req.headers, throw: false });
     } catch (e) {
       throw new TypeError(e instanceof Error ? e.message : "Network request failed");
     }

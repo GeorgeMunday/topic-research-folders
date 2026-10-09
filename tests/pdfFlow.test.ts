@@ -748,3 +748,15 @@ describe("pdf run identity after cancel and across flows", () => {
     expect(other).toBeGreaterThan(Math.max(...ev.map((s) => s.runId!)));
   });
 });
+
+describe("pdf pre-cancel", () => {
+  test("a pre-cancelled signal makes no API call and emits nothing", async () => {
+    const c = setup();
+    const events: Progress[] = [];
+    (c.flow as any).deps.progress = (_p: string, e: Progress) => { events.push(e); };
+    c.files.set("Topic/a.pdf", pdf3);
+    await c.flow.run(job("Topic/a.pdf"), { cancelled: true }, noCp);
+    expect(c.extract).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+});
